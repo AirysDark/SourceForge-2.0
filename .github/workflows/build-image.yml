@@ -1,0 +1,42 @@
+name: Build OS Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'Target model'
+        required: true
+        default: 'pi4'
+        type: choice
+        options: [pi3, pi4, pi5]
+      variant:
+        description: 'Image variant'
+        required: true
+        default: 'lite'
+        type: choice
+        options: [lite, full]
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host deps
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static kpartx xz-utils dosfstools git
+
+      - name: Build image with pi-gen (Docker)
+        run: |
+          ./scripts/build-pigen.sh --model "${{ inputs.model || 'pi4' }}" --variant "${{ inputs.variant || 'lite' }}" --outdir dist
+
+      - name: Checksums
+        run: (cd dist && sha256sum * > checksums.txt)
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sf20-os-image
+          path: dist/*
