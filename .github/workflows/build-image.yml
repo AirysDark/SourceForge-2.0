@@ -45,7 +45,7 @@ jobs:
           echo "basename=${BASENAME}" >> "$GITHUB_OUTPUT"
           if [ ! -f "dietpi-base/${BASENAME}.img.xz" ]; then
             echo "Missing: dietpi-base/${BASENAME}.img.xz" >&2
-            echo "Place the DietPi base image into dietpi-base/ (Git LFS tracked) or add a download step." >&2
+            echo "Place the DietPi base image into dietpi-base/ (Git LFS) or add a download step." >&2
             exit 1
           fi
 
@@ -125,7 +125,9 @@ jobs:
         run: |
           set -euxo pipefail
           sudo mkdir -p /mnt/imgboot/sf20
-          sudo rsync -a os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
+          # FAT-safe rsync (no owner/group/perms)
+          sudo rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
+            os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
 
       - name: Enable services inside target image
         run: |
