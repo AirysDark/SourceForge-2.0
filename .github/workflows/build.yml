@@ -1,256 +1,205 @@
-name: Build SourceForge 2.0 (from source via pi-gen, ARM64)
+name: Build SourceForge 2.0 (pi-gen, ARM64)
 
 on:
   workflow_dispatch:
     inputs:
       board:
         description: "Target board"
+        type: choice
         required: true
         default: rpi234
-        type: choice
         options:
-          - rpi234
-          - rpi5
+          - rpi234   # Raspberry Pi 2/3/4 (ARM64 userspace)
+          - rpi5     # Raspberry Pi 5 (ARM64 userspace)
   push:
     branches: [ main ]
     paths:
-      - "overlay/**"
-      - "os-pack/**"
-      - "shell/**"
-      - ".github/workflows/build-image.yml"
+      - 'overlay/**'
+      - 'os-pack/**'
+      - 'sf20/**'
+      - 'shell/**'
+      - '.github/workflows/build-image.yml'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
+    env:
+      BOARD: ${{ inputs.board || 'rpi234' }}
+      RELEASE: bookworm
+      IMG_NAME: sf20
+      BUILD_ARM64: "1"
+      APT_MIRROR: http://deb.debian.org/debian
+      DEBOOTSTRAP_EXTRA_FLAGS: --no-check-gpg
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set BOARD env (default rpi234)
-        shell: bash
-        run: |
-          if [ -z "${{ github.event.inputs.board }}" ]; then
-            echo "BOARD=rpi234" >> "$GITHUB_ENV"
-          else
-            echo "BOARD=${{ github.event.inputs.board }}" >> "$GITHUB_ENV"
-          fi
-
-      - name: Preflight - required files present
-        shell: bash
+      - name: Ensure SF20 pack exists (repo-root/sf20)
         run: |
           set -e
-          need=(
-            overlay/usr/local/bin/sourceforge-term
-            overlay/etc/systemd/system/sf20-terminal-tty1.service
-            overlay/usr/local/sf20/first-boot.sh
-            overlay/etc/profile.d/10-sf20-main.sh
-            overlay/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth
-            overlay/usr/share/plymouth/themes/sourceforge/sourceforge.script
-            os-pack/boot-side/sf20/sf20.repourl
-          )
-          miss=0
-          for f in "${need[@]}"; do
-            if [ ! -f "$f" ]; then echo "MISSING $f"; miss=1; else echo "ok      $f"; fi
-          done
-          if [ -d overlay/boot ]; then
-            echo "ERROR overlay/boot must NOT exist; use os-pack/boot-side/" >&2
-            exit 1
-          fi
-          [ "$miss" -eq 0 ]
+          test -d sf20 || { echo "Missing sf20/ pack at repo root"; exit 1; }
+          test -x sf20/scripts/sf20-apply-to-rootfs.sh || chmod +x sf20/scripts/sf20-apply-to-rootfs.sh || true
 
-      - name: Build sfsh (if sources exist)
-        shell: bash
-        run: |
-          set -eux
-          if [ -f shell/Makefile ] || [ -f shell/sfsh.c ]; then
-            sudo apt-get update
-            sudo apt-get install -y build-essential
-            make -C shell clean || true
-            make -C shell
-          else
-            echo "No custom shell sources; sourceforge-term will fallback to /bin/bash -l"
-          fi
-
-      - name: Install host helpers
-        shell: bash
-        run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y qemu-user-static debootstrap rsync xz-utils unzip
-
-      - name: Set up QEMU (arm64)
+      - name: Setup QEMU (arm64)
         uses: docker/setup-qemu-action@v3
         with:
-          platforms: arm64,arm
+          platforms: arm64
 
-      - name: Clone pi-gen
+      - name: Install binfmt (host) so pi-gen can run foreign arch
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt --install arm64
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync unzip xz-utils git build-essential file
+
+      - name: Build sfsh & stage into SF20 overlay
+        # If you keep your shell in repo-root/shell/, this compiles and installs to sf20/overlay/usr/local/bin/sfsh
+        if: ${{ hashFiles('shell/**') != '' }}
+        working-directory: shell
         shell: bash
         run: |
-          set -eux
+          set -euo pipefail
+          make clean
+          make
+          mkdir -p ../sf20/overlay/usr/local/bin
+          cp -f sfsh ../sf20/overlay/usr/local/bin/sfsh
+          chmod +x ../sf20/overlay/usr/local/bin/sfsh
+
+          # smoke tests (non-interactive)
+          out="$(printf 'version\nexit\n' | ../sf20/overlay/usr/local/bin/sfsh 2>/dev/null || true)"
+          echo "$out" | grep -qi "SourceForge 2.0 Shell" || { echo "version test failed"; echo "$out"; exit 1; }
+          out2="$(printf 'echo hello\nexit\n' | ../sf20/overlay/usr/local/bin/sfsh 2>/dev/null || true)"
+          last="$(echo "$out2" | sed '/^$/d' | tail -n1)"
+          [ "$last" = "hello" ] || { echo "echo test failed"; echo "$out2"; exit 1; }
+
+      - name: Verify minimal SF20 overlay + boot-side files
+        run: |
+          set -e
+          reqs="
+          sf20/overlay/usr/local/bin/sourceforge-term
+          sf20/overlay/usr/local/bin/sfsh
+          sf20/overlay/etc/profile.d/10-sf20-main.sh
+          sf20/overlay/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth
+          sf20/overlay/usr/share/plymouth/themes/sourceforge/sourceforge.script
+          sf20/overlay/usr/share/plymouth/themes/sourceforge/logo.png
+          sf20/boot-side/sf20/sf20.repourl
+          "
+          for f in $reqs; do
+            [ -f "$f" ] || { echo "MISSING $f"; exit 1; }
+          done
+
+      - name: Clone pi-gen (Raspberry Pi OS build system)
+        run: |
           git clone --depth 1 https://github.com/RPi-Distro/pi-gen.git
 
-      - name: Write pi-gen config (ARM64 + mirror + no-check-gpg)
-        shell: bash
+      - name: Prepare pi-gen config and custom stage (stage-sf20)
         run: |
-          set -eux
-          cat > pi-gen/config <<'EOF'
-          IMG_NAME=sf20
-          TARGET_HOSTNAME=sf20
-          ENABLE_SSH=1
-          LOCALE_DEFAULT="en_US.UTF-8"
-          KEYBOARD_KEYMAP="us"
-          KEYBOARD_LAYOUT="English (US)"
-          TIMEZONE_DEFAULT="UTC"
+          set -euo pipefail
+          cd pi-gen
 
-          BUILD_ARM64=1
-          STAGE_LIST="stage0 stage1 stage2"
+          # --- pi-gen config ---
+          cat > config <<CFG
+IMG_NAME=${IMG_NAME}
+RELEASE=${RELEASE}
+ENABLE_SSH=1
+LOCALE_DEFAULT="en_AU.UTF-8"
+KEYBOARD_KEYMAP="us"
+KEYBOARD_LAYOUT="us"
+TIMEZONE_DEFAULT="Australia/Sydney"
+STAGE_LIST="stage0 stage1 stage2 stage-sf20"
+BUILD_ARM64=${BUILD_ARM64}
+APT_MIRROR=${APT_MIRROR}
+DEBOOTSTRAP_EXTRA_FLAGS="${DEBOOTSTRAP_EXTRA_FLAGS}"
+CFG
 
-          APT_MIRROR=http://deb.debian.org/debian
-          DEBOOTSTRAP_EXTRA_FLAGS="--no-check-gpg"
+          # --- create custom stage and copy SF20 payload ---
+          mkdir -p stage-sf20/{00-run.d,01-files}
+          mkdir -p stage-sf20/01-files/overlay stage-sf20/01-files/boot-side/sf20
+          rsync -a ../sf20/overlay/ stage-sf20/01-files/overlay/
+          rsync -a ../sf20/boot-side/sf20/ stage-sf20/01-files/boot-side/sf20/
 
-          SKIP_NOOBS=1
-          EOF
+          # --- stage runner: install overlay/boot-side and force tty1 to SF20 terminal ---
+          cat > stage-sf20/00-run.sh <<'EOS'
+#!/bin/bash -e
+ROOTFS_DIR="${ROOTFS_DIR:-/}"
+BOOTFS_DIR="${BOOTFS_DIR:-/boot}"
 
-      - name: Patch stage0 to always add --no-check-gpg
-        shell: bash
-        run: |
-          set -eux
-          STAGE0=pi-gen/stage0/prerun.sh
-          if grep -q 'debootstrap ' "$STAGE0"; then
-            sed -i 's@debootstrap @debootstrap --no-check-gpg @' "$STAGE0"
-          fi
+# Root overlay (preserve perms)
+if [ -d "${STAGE_DIR}/01-files/overlay" ]; then
+  rsync -a "${STAGE_DIR}/01-files/overlay/" "${ROOTFS_DIR}/"
+fi
 
-      - name: Create SF20 custom stage in pi-gen
-        shell: bash
-        run: |
-          set -eux
-          STAGE="pi-gen/stage2/99-sf20"
-          mkdir -p "$STAGE/files/overlay" "$STAGE/00-run.chroot"
-          rsync -a overlay/ "$STAGE/files/overlay/"
-          if [ -f shell/sfsh ]; then
-            install -m 0755 shell/sfsh "$STAGE/files/overlay/usr/local/bin/sfsh"
-          fi
-          cat > "$STAGE/00-run.chroot/01-sf20-setup" <<'EOS'
-          #!/bin/bash -e
-          set -eux
-          chmod +x /usr/local/bin/sourceforge-term || true
-          [ -f /usr/local/bin/sfsh ] && chmod +x /usr/local/bin/sfsh || true
-          systemctl disable getty@tty1.service || true
-          ln -sf /dev/null /etc/systemd/system/getty@tty1.service || true
-          systemctl enable sf20-terminal-tty1.service || true
-          if [ -x /usr/local/bin/sfsh ]; then
-            cp /etc/passwd /etc/passwd.sf20.bak
-            awk -F: 'BEGIN{OFS=":"} $1=="root"{ $7="/usr/local/bin/sfsh" } {print }' /etc/passwd.sf20.bak > /etc/passwd.tmp
-            mv /etc/passwd.tmp /etc/passwd
-          fi
-          echo "SourceForge 2.0 OS" > /etc/issue
-          echo "SourceForge 2.0 OS" > /etc/issue.net
-          EOS
-          chmod +x "$STAGE/00-run.chroot/01-sf20-setup"
+# Boot-side (FAT-safe)
+if [ -d "${STAGE_DIR}/01-files/boot-side/sf20" ]; then
+  mkdir -p "${BOOTFS_DIR}/sf20"
+  rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
+    "${STAGE_DIR}/01-files/boot-side/sf20/" "${BOOTFS_DIR}/sf20/"
+fi
 
-          EXP="pi-gen/export-image/99-sf20-boot"
-          mkdir -p "$EXP/files/boot-side/sf20"
-          rsync -a os-pack/boot-side/sf20/ "$EXP/files/boot-side/sf20/"
-          cat > "$EXP/01-run.sh" <<'EOS'
-          #!/bin/bash -e
-          echo "[sf20] copying boot-side files into BOOTFS..."
-          mkdir -p "$BOOTFS_DIR/sf20"
-          rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
-            "$PWD/99-sf20-boot/files/boot-side/sf20/" "$BOOTFS_DIR/sf20/" || true
-          EOS
-          chmod +x "$EXP/01-run.sh"
+# systemd drop-in to replace getty@tty1 with our terminal
+mkdir -p "${ROOTFS_DIR}/etc/systemd/system/getty@tty1.service.d"
+cat > "${ROOTFS_DIR}/etc/systemd/system/getty@tty1.service.d/override.conf" <<OVR
+[Service]
+ExecStart=
+ExecStart=-/usr/local/bin/sourceforge-term
+OVR
 
-      - name: Write custom Dockerfile
-        shell: bash
-        run: |
-          set -eux
-          cat > pi-gen/Dockerfile.sf20 <<'DOCKER'
-          FROM debian:bookworm
-          ENV DEBIAN_FRONTEND=noninteractive
-          RUN apt-get update && apt-get install -y --no-install-recommends \
-                git ca-certificates xz-utils rsync \
-                bc coreutils bzip2 zip unzip kmod udev cpio \
-                debootstrap qemu-user-static parted kpartx dosfstools \
-                curl wget gnupg dirmngr sudo jq \
-                quilt zerofree libcap2-bin libarchive-tools xxd file pigz arch-test \
-              && rm -rf /var/lib/apt/lists/*
-          WORKDIR /pi-gen
-          COPY . /pi-gen
-          RUN find /pi-gen -type f -name "*.sh" -exec chmod +x {} \; || true
-          CMD ["/bin/bash", "-lc", "./build.sh"]
-          DOCKER
+# Executable bits
+chmod +x "${ROOTFS_DIR}/usr/local/bin/sourceforge-term" || true
+chmod +x "${ROOTFS_DIR}/usr/local/bin/sfsh" || true
 
-      - name: Build pi-gen container (amd64 host)
-        shell: bash
+# Optional: set plymouth default if theme exists
+if [ -f "${ROOTFS_DIR}/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth" ]; then
+  mkdir -p "${ROOTFS_DIR}/etc/plymouth"
+  echo '/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth' > "${ROOTFS_DIR}/etc/plymouth/plymouthd.conf" || true
+fi
+
+echo "[SF20] stage-sf20 applied"
+EOS
+          chmod +x stage-sf20/00-run.sh
+
+      - name: Build image with pi-gen (Docker mode)
+        working-directory: pi-gen
         env:
-          DOCKER_DEFAULT_PLATFORM: linux/amd64
+          IMG_NAME: ${{ env.IMG_NAME }}
+          BUILD_ARM64: ${{ env.BUILD_ARM64 }}
+          APT_MIRROR: ${{ env.APT_MIRROR }}
+          DEBOOTSTRAP_EXTRA_FLAGS: ${{ env.DEBOOTSTRAP_EXTRA_FLAGS }}
         run: |
           set -eux
-          docker build --platform linux/amd64 -t sf20-pigen -f pi-gen/Dockerfile.sf20 pi-gen
+          ./build-docker.sh
 
-      - name: Enable binfmt_misc on host + register qemu
-        shell: bash
+      - name: Locate built image (zip)
+        id: locate
         run: |
-          set -eux
-          sudo modprobe binfmt_misc || true
-          if [ ! -e /proc/sys/fs/binfmt_misc/register ]; then
-            sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
-          fi
-          docker run --privileged --rm tonistiigi/binfmt --install arm64,arm
-
-      - name: Run pi-gen build in container (mount binfmt_misc inside)
-        shell: bash
-        env:
-          DOCKER_DEFAULT_PLATFORM: linux/amd64
-        run: |
-          set -eux
-          docker run --privileged --rm \
-            -e IMG_NAME=sf20 \
-            -e BUILD_ARM64=1 \
-            -e APT_MIRROR=http://deb.debian.org/debian \
-            -e DEBOOTSTRAP_EXTRA_FLAGS="--no-check-gpg" \
-            -v "$PWD/pi-gen/deploy":/pi-gen/deploy \
-            --entrypoint /bin/bash \
-            sf20-pigen \
-            -lc 'mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc || true; exec ./build.sh'
-
-      # NEW: handle .img or .zip output
-      - name: Collect image (handle .zip export)
-        id: collect
-        shell: bash
-        run: |
-          set -eux
+          set -euo pipefail
           ls -lh pi-gen/deploy || true
-          IMG="$(ls -1t pi-gen/deploy/*.img 2>/dev/null | head -n 1 || true)"
-          if [ -z "$IMG" ]; then
-            ZIP="$(ls -1t pi-gen/deploy/image_*.zip 2>/dev/null | head -n 1 || true)"
-            if [ -z "$ZIP" ]; then
-              echo "No .img or .zip found in deploy/" >&2
-              find pi-gen -maxdepth 2 -name build.log -print -exec tail -n 200 {} \;
-              exit 1
-            fi
-            echo "Found zip: $ZIP ? extracting .img"
-            mkdir -p out
-            unzip -o "$ZIP" -d out
-            IMG="$(ls -1 out/*.img | head -n 1)"
-            [ -f "$IMG" ] || { echo "No .img inside zip" >&2; exit 1; }
+          ZIP=$(ls -1t pi-gen/deploy/*"${IMG_NAME}"*.zip | head -n1 || true)
+          if [ -z "$ZIP" ]; then
+            echo "No image zip found." >&2
+            # dump logs if present
+            find pi-gen -maxdepth 2 -name build.log -print -exec tail -n 200 '{}' ';' || true
+            exit 1
           fi
-          echo "img=$IMG" >> "$GITHUB_OUTPUT"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "Found: $ZIP"
 
-      - name: Rename by board & compress
-        shell: bash
+      - name: Rename artifact by board
         run: |
-          set -eux
-          SHORT="$BOARD"
-          cp "${{ steps.collect.outputs.img }}" "sf20-${SHORT}.img"
-          xz -9v "sf20-${SHORT}.img"
-          ls -lh "sf20-${SHORT}.img.xz"
+          set -euo pipefail
+          SHORT="${{ env.BOARD }}"
+          mkdir -p out
+          cp "${{ steps.locate.outputs.zip }}" "out/sf20-${SHORT}.zip"
+          ls -lh out
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: sf20-${{ env.BOARD }}
-          path: sf20-*.img.xz
+          path: out/sf20-*.zip
           if-no-files-found: error
