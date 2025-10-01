@@ -1,0 +1,14 @@
+[Unit]
+Description=SourceForge 2.0 First Boot Integration
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sf20/first-boot.sh
+RemainAfterExit=yes
+# Run only if not done
+ConditionPathExists=!/var/lib/sf20/.firstboot_done
+
+[Install]
+WantedBy=multi-user.target
