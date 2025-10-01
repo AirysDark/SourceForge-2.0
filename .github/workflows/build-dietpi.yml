@@ -1,12 +1,14 @@
-name: Build DietPi Image
+name: Build DietPi Image (local base)
 
 on:
   workflow_dispatch:
     inputs:
-      dietpi_url:
-        description: 'DietPi image URL (.img.xz) for Raspberry Pi arm64'
+      model:
+        description: 'Pi model (pi3/pi4 or pi5)'
         required: true
-        default: 'https://dietpi.com/downloads/images/DietPi_RPi-ARMv8-Bookworm.img.xz'
+        default: 'pi4'
+        type: choice
+        options: [pi3, pi4, pi5]
   push:
     tags:
       - 'v*.*.*'
@@ -18,23 +20,20 @@ jobs:
   build-dietpi:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y xz-utils kpartx qemu-utils dosfstools parted unzip curl dos2unix
+          sudo apt-get install -y xz-utils kpartx dosfstools parted unzip dos2unix
 
-      - name: Normalize & exec
+      - name: Normalize script
         run: |
           dos2unix scripts/build-dietpi-image.sh || true
           chmod +x scripts/build-dietpi-image.sh
 
       - name: Build image
-        env:
-          DIETPI_IMAGE_URL: ${{ inputs.dietpi_url }}
-        run: ./scripts/build-dietpi-image.sh dist
+        run: ./scripts/build-dietpi-image.sh "${{ inputs.model }}" dist
 
       - name: Checksums
         run: (cd dist && sha256sum * > checksums.txt)
