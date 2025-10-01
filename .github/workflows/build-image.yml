@@ -9,8 +9,8 @@ on:
         required: true
         default: rpi234
         options:
-          - rpi234     # RPi 2/3/4 → DietPi_RPi234-ARMv8-Trixie.img.xz
-          - rpi5       # RPi 5      → DietPi_RPi5-ARMv8-Trixie.img.xz
+          - rpi234
+          - rpi5
   push:
     branches: [ main ]
     paths:
@@ -28,8 +28,10 @@ jobs:
       BOARD: ${{ inputs.board || 'rpi234' }}
 
     steps:
-      - name: Checkout
+      - name: Checkout (with Git LFS)
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Resolve base image by BOARD
         id: base
@@ -43,7 +45,18 @@ jobs:
           echo "basename=${BASENAME}" >> "$GITHUB_OUTPUT"
           if [ ! -f "dietpi-base/${BASENAME}.img.xz" ]; then
             echo "Missing: dietpi-base/${BASENAME}.img.xz" >&2
-            echo "Place the DietPi base image into dietpi-base/ or add a wget step." >&2
+            echo "Place the DietPi base image into dietpi-base/ (Git LFS tracked) or add a download step." >&2
+            exit 1
+          fi
+
+      - name: Validate DietPi base is real (not LFS pointer)
+        run: |
+          set -euo pipefail
+          BASENAME="${{ steps.base.outputs.basename }}"
+          ls -lh "dietpi-base/${BASENAME}.img.xz"
+          file "dietpi-base/${BASENAME}.img.xz"
+          if ! xz -t "dietpi-base/${BASENAME}.img.xz" 2>/dev/null; then
+            echo "ERROR: ${BASENAME}.img.xz is not a valid xz (likely an LFS pointer not fetched)." >&2
             exit 1
           fi
 
@@ -74,7 +87,6 @@ jobs:
           sudo umount /mnt/imgroot 2>/dev/null || true
           sudo rm -rf /mnt/imgboot /mnt/imgroot
           sudo mkdir -p /mnt/imgroot /mnt/imgboot
-          # allow non-root steps to inspect dirs if needed
           sudo chown "$USER":"$USER" /mnt/imgroot /mnt/imgboot || true
 
       - name: Prepare workspace
@@ -92,17 +104,12 @@ jobs:
           set -euxo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
           IMG="build/${BASENAME}.img"
-
-          # Create loop device with partition scan
           LOOP=$(sudo losetup -f --show -P "$IMG")
           echo "LOOP=$LOOP" | tee $GITHUB_ENV
           sudo partprobe "$LOOP" || true
           sudo fdisk -l "$LOOP" || true
-
-          # Mount standard Raspberry Pi layout: p1=boot (FAT), p2=rootfs
           sudo mount ${LOOP}p2 /mnt/imgroot
           sudo mount ${LOOP}p1 /mnt/imgboot
-
           ls -la /mnt/imgboot || true
           ls -la /mnt/imgroot || true
 
@@ -110,7 +117,6 @@ jobs:
         run: |
           set -euxo pipefail
           sudo rsync -a overlay/ /mnt/imgroot/
-          # Ensure executables
           sudo chmod +x /mnt/imgroot/usr/local/sf20/first-boot.sh || true
           sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge-term || true
           sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge.sh || true
@@ -126,7 +132,6 @@ jobs:
           set -euxo pipefail
           sudo systemctl --root=/mnt/imgroot enable sf20-firstboot.service
           sudo systemctl --root=/mnt/imgroot enable sf20-terminal-tty1.service
-          # Verify (non-fatal)
           sudo chroot /mnt/imgroot /bin/bash -lc 'systemctl is-enabled sf20-firstboot.service || true'
           sudo chroot /mnt/imgroot /bin/bash -lc 'systemctl is-enabled sf20-terminal-tty1.service || true'
 
