@@ -9,8 +9,8 @@ on:
         required: true
         default: rpi234
         options:
-          - rpi234     # RPi 2/3/4 ? DietPi_RPi234-ARMv8-Trixie.img.xz
-          - rpi5       # RPi 5      ? DietPi_RPi5-ARMv8-Trixie.img.xz
+          - rpi234     # RPi 2/3/4 → DietPi_RPi234-ARMv8-Trixie.img.xz
+          - rpi5       # RPi 5      → DietPi_RPi5-ARMv8-Trixie.img.xz
   push:
     branches: [ main ]
     paths:
@@ -36,19 +36,11 @@ jobs:
         run: |
           set -euo pipefail
           case "${BOARD}" in
-            rpi234)
-              BASENAME="DietPi_RPi234-ARMv8-Trixie"
-              ;;
-            rpi5)
-              BASENAME="DietPi_RPi5-ARMv8-Trixie"
-              ;;
-            *)
-              echo "Unknown BOARD: ${BOARD}" >&2
-              exit 1
-              ;;
+            rpi234) BASENAME="DietPi_RPi234-ARMv8-Trixie" ;;
+            rpi5)   BASENAME="DietPi_RPi5-ARMv8-Trixie" ;;
+            *)      echo "Unknown BOARD: ${BOARD}" >&2; exit 1 ;;
           esac
           echo "basename=${BASENAME}" >> "$GITHUB_OUTPUT"
-          # Check file exists
           if [ ! -f "dietpi-base/${BASENAME}.img.xz" ]; then
             echo "Missing: dietpi-base/${BASENAME}.img.xz" >&2
             echo "Place the DietPi base image into dietpi-base/ or add a wget step." >&2
@@ -75,11 +67,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux
 
+      - name: Pre-clean mount points (best effort)
+        if: always()
+        run: |
+          sudo umount /mnt/imgboot 2>/dev/null || true
+          sudo umount /mnt/imgroot 2>/dev/null || true
+          sudo rm -rf /mnt/imgboot /mnt/imgroot
+          sudo mkdir -p /mnt/imgroot /mnt/imgboot
+          # allow non-root steps to inspect dirs if needed
+          sudo chown "$USER":"$USER" /mnt/imgroot /mnt/imgboot || true
+
       - name: Prepare workspace
         run: |
           set -euxo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
-          mkdir -p build /mnt/imgroot /mnt/imgboot
+          mkdir -p build
           cp "dietpi-base/${BASENAME}.img.xz" build/
           cd build
           unxz -T0 "${BASENAME}.img.xz"
@@ -90,11 +92,17 @@ jobs:
           set -euxo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
           IMG="build/${BASENAME}.img"
+
+          # Create loop device with partition scan
           LOOP=$(sudo losetup -f --show -P "$IMG")
           echo "LOOP=$LOOP" | tee $GITHUB_ENV
+          sudo partprobe "$LOOP" || true
           sudo fdisk -l "$LOOP" || true
+
+          # Mount standard Raspberry Pi layout: p1=boot (FAT), p2=rootfs
           sudo mount ${LOOP}p2 /mnt/imgroot
           sudo mount ${LOOP}p1 /mnt/imgboot
+
           ls -la /mnt/imgboot || true
           ls -la /mnt/imgroot || true
 
@@ -102,6 +110,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo rsync -a overlay/ /mnt/imgroot/
+          # Ensure executables
           sudo chmod +x /mnt/imgroot/usr/local/sf20/first-boot.sh || true
           sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge-term || true
           sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge.sh || true
@@ -117,6 +126,7 @@ jobs:
           set -euxo pipefail
           sudo systemctl --root=/mnt/imgroot enable sf20-firstboot.service
           sudo systemctl --root=/mnt/imgroot enable sf20-terminal-tty1.service
+          # Verify (non-fatal)
           sudo chroot /mnt/imgroot /bin/bash -lc 'systemctl is-enabled sf20-firstboot.service || true'
           sudo chroot /mnt/imgroot /bin/bash -lc 'systemctl is-enabled sf20-terminal-tty1.service || true'
 
@@ -127,7 +137,8 @@ jobs:
           sync || true
           sudo umount /mnt/imgboot || true
           sudo umount /mnt/imgroot || true
-          if [ -n "${LOOP:-}" ]; then sudo losetup -d "$LOOP"; fi
+          if [ -n "${LOOP:-}" ]; then sudo losetup -d "$LOOP" || true; fi
+          sudo rm -rf /mnt/imgboot /mnt/imgroot || true
 
       - name: Recompress image
         run: |
