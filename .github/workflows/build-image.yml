@@ -43,15 +43,12 @@ jobs:
             *)      echo "Unknown BOARD: ${BOARD}" >&2; exit 1 ;;
           esac
           echo "basename=${BASENAME}" >> "$GITHUB_OUTPUT"
-<<<<<<< HEAD
+          echo "shortname=${BOARD}" >> "$GITHUB_OUTPUT"
           if [ ! -f "dietpi-base/${BASENAME}.img.xz" ]; then
             echo "Missing: dietpi-base/${BASENAME}.img.xz" >&2
             echo "Place the DietPi base image into dietpi-base/ (Git LFS) or add a download step." >&2
             exit 1
           fi
-=======
-          echo "shortname=${BOARD}" >> "$GITHUB_OUTPUT"
->>>>>>> b82f417af5c8718662fef29d57da352bda792b96
 
       - name: Validate DietPi base is real (not LFS pointer)
         run: |
@@ -64,12 +61,26 @@ jobs:
             exit 1
           fi
 
+      - name: Sanity checks (overlay/os-pack layout)
+        run: |
+          set -e
+          test -f overlay/etc/profile.d/10-sf20-main.sh
+          test -f overlay/etc/systemd/system/sf20-firstboot.service
+          test -f overlay/etc/systemd/system/sf20-terminal-tty1.service
+          test -f overlay/usr/local/sf20/first-boot.sh
+          test -f overlay/usr/local/bin/sourceforge-term
+          test -f overlay/usr/local/bin/sourceforge.sh
+          test -f overlay/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth
+          test -f overlay/usr/share/plymouth/themes/sourceforge/sourceforge.script
+          test -f overlay/usr/share/plymouth/themes/sourceforge/logo.png
+          test -f os-pack/boot-side/sf20/sf20.repourl
+          if [ -d overlay/boot ]; then echo "overlay/boot must not exist"; exit 1; fi
+
       - name: Install build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux
 
-<<<<<<< HEAD
       - name: Pre-clean mount points (best effort)
         if: always()
         run: |
@@ -79,8 +90,6 @@ jobs:
           sudo mkdir -p /mnt/imgroot /mnt/imgboot
           sudo chown "$USER":"$USER" /mnt/imgroot /mnt/imgboot || true
 
-=======
->>>>>>> b82f417af5c8718662fef29d57da352bda792b96
       - name: Prepare workspace
         run: |
           set -euxo pipefail
@@ -102,11 +111,8 @@ jobs:
           sudo fdisk -l "$LOOP" || true
           sudo mount ${LOOP}p2 /mnt/imgroot
           sudo mount ${LOOP}p1 /mnt/imgboot
-<<<<<<< HEAD
           ls -la /mnt/imgboot || true
           ls -la /mnt/imgroot || true
-=======
->>>>>>> b82f417af5c8718662fef29d57da352bda792b96
 
       - name: Apply overlay (root filesystem)
         run: |
@@ -120,11 +126,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo mkdir -p /mnt/imgboot/sf20
-<<<<<<< HEAD
-          # FAT-safe rsync (don’t preserve perms/owners/groups)
-=======
-          # FAT-safe rsync
->>>>>>> b82f417af5c8718662fef29d57da352bda792b96
+          # FAT-safe rsync (don't preserve perms/owners/groups)
           sudo rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
             os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
 
@@ -133,10 +135,7 @@ jobs:
           set -euxo pipefail
           sudo systemctl --root=/mnt/imgroot enable sf20-firstboot.service
           sudo systemctl --root=/mnt/imgroot enable sf20-terminal-tty1.service
-<<<<<<< HEAD
           # Verify enablement (no chroot needed)
-=======
->>>>>>> b82f417af5c8718662fef29d57da352bda792b96
           sudo systemctl --root=/mnt/imgroot is-enabled sf20-firstboot.service || true
           sudo systemctl --root=/mnt/imgroot is-enabled sf20-terminal-tty1.service || true
 
@@ -150,7 +149,7 @@ jobs:
           if [ -n "${LOOP:-}" ]; then sudo losetup -d "$LOOP" || true; fi
           sudo rm -rf /mnt/imgboot /mnt/imgroot || true
 
-      - name: Recompress image
+      - name: Recompress image (rename by board)
         run: |
           set -euxo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
