@@ -1,102 +1,205 @@
-- name: Install host tools for SF20 injection
+name: Build SourceForge 2.0 (pi-gen, ARM64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: "Target board"
+        type: choice
+        required: true
+        default: rpi234
+        options:
+          - rpi234   # Raspberry Pi 2/3/4 (ARM64 userspace)
+          - rpi5     # Raspberry Pi 5 (ARM64 userspace)
+  push:
+    branches: [ main ]
+    paths:
+      - 'overlay/**'
+      - 'os-pack/**'
+      - 'sf20/**'
+      - 'shell/**'
+      - '.github/workflows/build-image.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      BOARD: ${{ inputs.board || 'rpi234' }}
+      RELEASE: bookworm
+      IMG_NAME: sf20
+      BUILD_ARM64: "1"
+      APT_MIRROR: http://deb.debian.org/debian
+      DEBOOTSTRAP_EXTRA_FLAGS: --no-check-gpg
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure SF20 pack exists (repo-root/sf20)
+        run: |
+          set -e
+          test -d sf20 || { echo "Missing sf20/ pack at repo root"; exit 1; }
+          test -x sf20/scripts/sf20-apply-to-rootfs.sh || chmod +x sf20/scripts/sf20-apply-to-rootfs.sh || true
+
+      - name: Setup QEMU (arm64)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Install binfmt (host) so pi-gen can run foreign arch
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt --install arm64
+
+      - name: Install host tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y rsync unzip xz-utils kpartx parted e2fsprogs dosfstools util-linux build-essential file
+          sudo apt-get install -y rsync unzip xz-utils git build-essential file
 
-      - name: Build sfsh and stage into overlay
-        working-directory: sf20/shell
+      - name: Build sfsh & stage into SF20 overlay
+        # If you keep your shell in repo-root/shell/, this compiles and installs to sf20/overlay/usr/local/bin/sfsh
+        if: ${{ hashFiles('shell/**') != '' }}
+        working-directory: shell
+        shell: bash
         run: |
           set -euo pipefail
           make clean
           make
-          make install   # installs to ../overlay/usr/local/bin/sfsh
-          test -x ../overlay/usr/local/bin/sfsh
+          mkdir -p ../sf20/overlay/usr/local/bin
+          cp -f sfsh ../sf20/overlay/usr/local/bin/sfsh
+          chmod +x ../sf20/overlay/usr/local/bin/sfsh
 
-      - name: Locate image (raw or zipped)
-        id: findimg
+          # smoke tests (non-interactive)
+          out="$(printf 'version\nexit\n' | ../sf20/overlay/usr/local/bin/sfsh 2>/dev/null || true)"
+          echo "$out" | grep -qi "SourceForge 2.0 Shell" || { echo "version test failed"; echo "$out"; exit 1; }
+          out2="$(printf 'echo hello\nexit\n' | ../sf20/overlay/usr/local/bin/sfsh 2>/dev/null || true)"
+          last="$(echo "$out2" | sed '/^$/d' | tail -n1)"
+          [ "$last" = "hello" ] || { echo "echo test failed"; echo "$out2"; exit 1; }
+
+      - name: Verify minimal SF20 overlay + boot-side files
+        run: |
+          set -e
+          reqs="
+          sf20/overlay/usr/local/bin/sourceforge-term
+          sf20/overlay/usr/local/bin/sfsh
+          sf20/overlay/etc/profile.d/10-sf20-main.sh
+          sf20/overlay/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth
+          sf20/overlay/usr/share/plymouth/themes/sourceforge/sourceforge.script
+          sf20/overlay/usr/share/plymouth/themes/sourceforge/logo.png
+          sf20/boot-side/sf20/sf20.repourl
+          "
+          for f in $reqs; do
+            [ -f "$f" ] || { echo "MISSING $f"; exit 1; }
+          done
+
+      - name: Clone pi-gen (Raspberry Pi OS build system)
+        run: |
+          git clone --depth 1 https://github.com/RPi-Distro/pi-gen.git
+
+      - name: Prepare pi-gen config and custom stage (stage-sf20)
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          # Prefer any .zip with one .img inside; else take .img
-          ZIPS=( **/*.zip **/*.ZIP )
-          IMGS=( **/*.img **/*.IMG )
-          pick=""
+          cd pi-gen
 
-          if [ ${#ZIPS[@]} -gt 0 ]; then
-            # Pick newest zip
-            pick="$(ls -1t "${ZIPS[@]}" | head -n1)"
-            echo "zip=${pick}" >> "$GITHUB_OUTPUT"
-            echo "Found zip: $pick"
-          elif [ ${#IMGS[@]} -gt 0 ]; then
-            pick="$(ls -1t "${IMGS[@]}" | head -n1)"
-            echo "img=${pick}" >> "$GITHUB_OUTPUT"
-            echo "Found img: $pick"
-          else
-            echo "No .img or .zip image found in workspace." >&2
+          # --- pi-gen config ---
+          cat > config <<CFG
+IMG_NAME=${IMG_NAME}
+RELEASE=${RELEASE}
+ENABLE_SSH=1
+LOCALE_DEFAULT="en_AU.UTF-8"
+KEYBOARD_KEYMAP="us"
+KEYBOARD_LAYOUT="us"
+TIMEZONE_DEFAULT="Australia/Sydney"
+STAGE_LIST="stage0 stage1 stage2 stage-sf20"
+BUILD_ARM64=${BUILD_ARM64}
+APT_MIRROR=${APT_MIRROR}
+DEBOOTSTRAP_EXTRA_FLAGS="${DEBOOTSTRAP_EXTRA_FLAGS}"
+CFG
+
+          # --- create custom stage and copy SF20 payload ---
+          mkdir -p stage-sf20/{00-run.d,01-files}
+          mkdir -p stage-sf20/01-files/overlay stage-sf20/01-files/boot-side/sf20
+          rsync -a ../sf20/overlay/ stage-sf20/01-files/overlay/
+          rsync -a ../sf20/boot-side/sf20/ stage-sf20/01-files/boot-side/sf20/
+
+          # --- stage runner: install overlay/boot-side and force tty1 to SF20 terminal ---
+          cat > stage-sf20/00-run.sh <<'EOS'
+#!/bin/bash -e
+ROOTFS_DIR="${ROOTFS_DIR:-/}"
+BOOTFS_DIR="${BOOTFS_DIR:-/boot}"
+
+# Root overlay (preserve perms)
+if [ -d "${STAGE_DIR}/01-files/overlay" ]; then
+  rsync -a "${STAGE_DIR}/01-files/overlay/" "${ROOTFS_DIR}/"
+fi
+
+# Boot-side (FAT-safe)
+if [ -d "${STAGE_DIR}/01-files/boot-side/sf20" ]; then
+  mkdir -p "${BOOTFS_DIR}/sf20"
+  rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
+    "${STAGE_DIR}/01-files/boot-side/sf20/" "${BOOTFS_DIR}/sf20/"
+fi
+
+# systemd drop-in to replace getty@tty1 with our terminal
+mkdir -p "${ROOTFS_DIR}/etc/systemd/system/getty@tty1.service.d"
+cat > "${ROOTFS_DIR}/etc/systemd/system/getty@tty1.service.d/override.conf" <<OVR
+[Service]
+ExecStart=
+ExecStart=-/usr/local/bin/sourceforge-term
+OVR
+
+# Executable bits
+chmod +x "${ROOTFS_DIR}/usr/local/bin/sourceforge-term" || true
+chmod +x "${ROOTFS_DIR}/usr/local/bin/sfsh" || true
+
+# Optional: set plymouth default if theme exists
+if [ -f "${ROOTFS_DIR}/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth" ]; then
+  mkdir -p "${ROOTFS_DIR}/etc/plymouth"
+  echo '/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth' > "${ROOTFS_DIR}/etc/plymouth/plymouthd.conf" || true
+fi
+
+echo "[SF20] stage-sf20 applied"
+EOS
+          chmod +x stage-sf20/00-run.sh
+
+      - name: Build image with pi-gen (Docker mode)
+        working-directory: pi-gen
+        env:
+          IMG_NAME: ${{ env.IMG_NAME }}
+          BUILD_ARM64: ${{ env.BUILD_ARM64 }}
+          APT_MIRROR: ${{ env.APT_MIRROR }}
+          DEBOOTSTRAP_EXTRA_FLAGS: ${{ env.DEBOOTSTRAP_EXTRA_FLAGS }}
+        run: |
+          set -eux
+          ./build-docker.sh
+
+      - name: Locate built image (zip)
+        id: locate
+        run: |
+          set -euo pipefail
+          ls -lh pi-gen/deploy || true
+          ZIP=$(ls -1t pi-gen/deploy/*"${IMG_NAME}"*.zip | head -n1 || true)
+          if [ -z "$ZIP" ]; then
+            echo "No image zip found." >&2
+            # dump logs if present
+            find pi-gen -maxdepth 2 -name build.log -print -exec tail -n 200 '{}' ';' || true
             exit 1
           fi
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          echo "Found: $ZIP"
 
-      - name: Extract .img from .zip if needed
-        if: ${{ steps.findimg.outputs.zip != '' }}
-        id: unzipimg
+      - name: Rename artifact by board
         run: |
           set -euo pipefail
-          mkdir -p image_work
-          unzip -o "${{ steps.findimg.outputs.zip }}" -d image_work
-          IMG=$(ls -1 image_work/*.img | head -n1)
-          [ -n "$IMG" ] || { echo "No .img found inside zip"; exit 1; }
-          echo "img=$IMG" >> "$GITHUB_OUTPUT"
-          ls -lh "$IMG"
-
-      - name: Mount, inject SF20, unmount
-        env:
-          IMG_PATH: ${{ steps.unzipimg.outputs.img || steps.findimg.outputs.img }}
-        run: |
-          set -euo pipefail
-          IMG="${IMG_PATH}"
-          [ -f "$IMG" ] || { echo "IMG not found: $IMG"; exit 1; }
-
-          echo "Using image: $IMG"
-
-          # Setup loop + partitions
-          LOOP=$(sudo losetup -f --show -P "$IMG")
-          echo "LOOP=$LOOP"
-
-          # Identify boot/root partitions (Raspberry Pi OS layout: p1=boot, p2=root)
-          BOOT="${LOOP}p1"
-          ROOT="${LOOP}p2"
-          sudo partprobe "$LOOP" || true
-
-          mkdir -p /mnt/sf20root /mnt/sf20boot
-          sudo mount "$ROOT" /mnt/sf20root
-          sudo mount "$BOOT" /mnt/sf20boot
-
-          # Apply SF20 overlay & boot-side (tty1 override included)
-          sudo sf20/scripts/sf20-apply-to-rootfs.sh /mnt/sf20root /mnt/sf20boot
-
-          # Ensure fs is clean
-          sync
-          sudo umount /mnt/sf20boot || true
-          sudo umount /mnt/sf20root || true
-          sudo losetup -d "$LOOP" || true
-
-      - name: Repack and upload artifact
-        env:
-          IMG_RAW: ${{ steps.unzipimg.outputs.img || steps.findimg.outputs.img }}
-          BOARD_LABEL: ${{ inputs.board || 'rpi234' }}
-        run: |
-          set -euo pipefail
+          SHORT="${{ env.BOARD }}"
           mkdir -p out
-          base="sf20-${BOARD_LABEL}"
-          zipfile="out/${base}.zip"
-
-          # Always zip the raw image we modified
-          ( cd "$(dirname "$IMG_RAW")" && zip -9 "${GITHUB_WORKSPACE}/${zipfile}" "$(basename "$IMG_RAW")" )
+          cp "${{ steps.locate.outputs.zip }}" "out/sf20-${SHORT}.zip"
           ls -lh out
 
-      - name: Upload SF20 image artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sf20-${{ inputs.board || 'rpi234' }}
-          path: out/*.zip
+          name: sf20-${{ env.BOARD }}
+          path: out/sf20-*.zip
           if-no-files-found: error
