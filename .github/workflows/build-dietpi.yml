@@ -7,10 +7,10 @@ on:
         description: "Target board"
         type: choice
         required: true
-        default: Raspberry pi 2/3/4
+        default: rpi234
         options:
-          - Raspberry pi 2/3/4
-          - Raspberry pi 5
+          - rpi234   # Raspberry Pi 2/3/4
+          - rpi5     # Raspberry Pi 5
   push:
     branches: [ main ]
     paths:
@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 75
 
     env:
-      BOARD: ${{ inputs.board || 'Raspberry pi 2/3/4' }}
+      BOARD: ${{ inputs.board || 'rpi234' }}
 
     steps:
       - name: Checkout (with Git LFS)
@@ -38,8 +38,8 @@ jobs:
         run: |
           set -euo pipefail
           case "${BOARD}" in
-            Raspberry pi 2/3/4) BASENAME="DietPi_RPi234-ARMv8-Trixie" ;;
-            Raspberry pi 5)   BASENAME="DietPi_RPi5-ARMv8-Trixie" ;;
+            rpi234) BASENAME="DietPi_RPi234-ARMv8-Trixie" ;;
+            rpi5)   BASENAME="DietPi_RPi5-ARMv8-Trixie" ;;
             *)      echo "Unknown BOARD: ${BOARD}" >&2; exit 1 ;;
           esac
           echo "basename=${BASENAME}" >> "$GITHUB_OUTPUT"
