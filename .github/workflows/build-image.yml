@@ -123,7 +123,6 @@ jobs:
           if grep -q 'debootstrap ' "$STAGE0"; then
             sed -i 's@debootstrap @debootstrap --no-check-gpg @' "$STAGE0"
           fi
-          head -n 120 "$STAGE0" || true
 
       - name: Create SF20 custom stage in pi-gen
         shell: bash
@@ -131,46 +130,28 @@ jobs:
           set -eux
           STAGE="pi-gen/stage2/99-sf20"
           mkdir -p "$STAGE/files/overlay" "$STAGE/00-run.chroot"
-
-          # Root overlay into the image (pi-gen will rsync this)
           rsync -a overlay/ "$STAGE/files/overlay/"
-
-          # Include custom shell if built
           if [ -f shell/sfsh ]; then
             install -m 0755 shell/sfsh "$STAGE/files/overlay/usr/local/bin/sfsh"
           fi
-
-          # Chroot script to own TTY1, set root shell, banners, plymouth
           cat > "$STAGE/00-run.chroot/01-sf20-setup" <<'EOS'
           #!/bin/bash -e
           set -eux
           chmod +x /usr/local/bin/sourceforge-term || true
           [ -f /usr/local/bin/sfsh ] && chmod +x /usr/local/bin/sfsh || true
-
           systemctl disable getty@tty1.service || true
           ln -sf /dev/null /etc/systemd/system/getty@tty1.service || true
           systemctl enable sf20-terminal-tty1.service || true
-
           if [ -x /usr/local/bin/sfsh ]; then
             cp /etc/passwd /etc/passwd.sf20.bak
             awk -F: 'BEGIN{OFS=":"} $1=="root"{ $7="/usr/local/bin/sfsh" } {print }' /etc/passwd.sf20.bak > /etc/passwd.tmp
             mv /etc/passwd.tmp /etc/passwd
           fi
-
           echo "SourceForge 2.0 OS" > /etc/issue
           echo "SourceForge 2.0 OS" > /etc/issue.net
-
-          if [ -f /usr/share/plymouth/themes/sourceforge/sourceforge.plymouth ]; then
-            mkdir -p /etc/plymouth
-            cat > /etc/plymouth/plymouthd.conf <<EOF
-          [Daemon]
-          Theme=sourceforge
-          EOF
-          fi
           EOS
           chmod +x "$STAGE/00-run.chroot/01-sf20-setup"
 
-          # Export hook: copy boot-side content into BOOT FS during export
           EXP="pi-gen/export-image/99-sf20-boot"
           mkdir -p "$EXP/files/boot-side/sf20"
           rsync -a os-pack/boot-side/sf20/ "$EXP/files/boot-side/sf20/"
@@ -183,13 +164,12 @@ jobs:
           EOS
           chmod +x "$EXP/01-run.sh"
 
-      - name: Write custom Dockerfile (bookworm, amd64, all pi-gen deps)
+      - name: Write custom Dockerfile
         shell: bash
         run: |
           set -eux
           cat > pi-gen/Dockerfile.sf20 <<'DOCKER'
           FROM debian:bookworm
-
           ENV DEBIAN_FRONTEND=noninteractive
           RUN apt-get update && apt-get install -y --no-install-recommends \
                 git ca-certificates xz-utils rsync \
@@ -198,17 +178,13 @@ jobs:
                 curl wget gnupg dirmngr sudo jq \
                 quilt zerofree libcap2-bin libarchive-tools xxd file pigz arch-test \
               && rm -rf /var/lib/apt/lists/*
-
           WORKDIR /pi-gen
           COPY . /pi-gen
           RUN find /pi-gen -type f -name "*.sh" -exec chmod +x {} \; || true
-
           CMD ["/bin/bash", "-lc", "./build.sh"]
           DOCKER
 
-          head -n 50 pi-gen/Dockerfile.sf20
-
-      - name: Build pi-gen container (forced amd64)
+      - name: Build pi-gen container (amd64 host)
         shell: bash
         env:
           DOCKER_DEFAULT_PLATFORM: linux/amd64
@@ -216,18 +192,14 @@ jobs:
           set -eux
           docker build --platform linux/amd64 -t sf20-pigen -f pi-gen/Dockerfile.sf20 pi-gen
 
-      # ? Ensure binfmt_misc is loaded & mounted on the HOST
       - name: Enable binfmt_misc on host
         shell: bash
         run: |
           set -eux
           sudo modprobe binfmt_misc || true
           if [ ! -e /proc/sys/fs/binfmt_misc/register ]; then
-            # mount binfmt_misc if not already mounted
-            echo "Mounting binfmt_misc on host..."
             sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
           fi
-          # Register arm/arm64 qemu handlers (idempotent)
           docker run --privileged --rm tonistiigi/binfmt --install arm64,arm
 
       - name: Run pi-gen build in container
@@ -241,7 +213,7 @@ jobs:
             -e BUILD_ARM64=1 \
             -e APT_MIRROR=http://deb.debian.org/debian \
             -e DEBOOTSTRAP_EXTRA_FLAGS="--no-check-gpg" \
-            -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc \  # ? bind binfmt into container
+            -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc \
             -v "$PWD/pi-gen/deploy":/pi-gen/deploy \
             sf20-pigen
 
@@ -258,7 +230,6 @@ jobs:
             exit 1
           fi
           echo "img=$IMG" >> "$GITHUB_OUTPUT"
-          ls -lh "$IMG"
 
       - name: Rename by board & compress
         shell: bash
