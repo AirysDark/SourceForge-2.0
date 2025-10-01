@@ -1,4 +1,4 @@
-name: Build SourceForge 2.0 (DietPi base ? SF20)
+name: Build SourceForge 2.0 (pi-gen from source)
 
 on:
   workflow_dispatch:
@@ -9,269 +9,167 @@ on:
         required: true
         default: rpi234
         options:
-          - rpi234   # Raspberry Pi 2/3/4
-          - rpi5     # Raspberry Pi 5
-      dietpi_url:
-        description: "(Optional) URL to DietPi base .img.xz if not in repo"
-        required: false
-        type: string
+          - rpi234   # Raspberry Pi 2/3/4 (arm64 image; Pi 2 may not boot 64-bit)
+          - rpi5     # Raspberry Pi 5 (arm64)
   push:
     branches: [ main ]
     paths:
       - 'overlay/**'
       - 'os-pack/**'
-      - 'dietpi-base/**'
-      - '.github/workflows/build-image.yml'
+      - 'shell/**'
+      - '.github/workflows/build-pigen-sf20.yml'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
-      - name: Checkout (with Git LFS)
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          lfs: true
 
-      # Normalize BOARD with a default for non-dispatch triggers
-      - name: Set BOARD env (default to rpi234)
+      - name: Build sfsh (optional, if you keep sources in repo)
         shell: bash
         run: |
-          BOARD_IN="${{ github.event.inputs.board }}"
-          if [ -z "$BOARD_IN" ]; then BOARD_IN="rpi234"; fi
-          echo "BOARD=$BOARD_IN" >> "$GITHUB_ENV"
-
-      - name: Resolve base filenames and labels
-        id: base
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "${BOARD}" in
-            rpi234)
-              echo "basename=DietPi_RPi234-ARMv8-Trixie" >> "$GITHUB_OUTPUT"
-              echo "shortname=rpi234" >> "$GITHUB_OUTPUT"
-              echo "board_label=Raspberry Pi 2/3/4" >> "$GITHUB_OUTPUT"
-              ;;
-            rpi5)
-              echo "basename=DietPi_RPi5-ARMv8-Trixie" >> "$GITHUB_OUTPUT"
-              echo "shortname=rpi5" >> "$GITHUB_OUTPUT"
-              echo "board_label=Raspberry Pi 5" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "Unknown BOARD: ${BOARD}" >&2
-              exit 1
-              ;;
-          esac
-
-      - name: Ensure DietPi base is present (download if missing)
-        shell: bash
-        run: |
-          set -euo pipefail
-          BASENAME="${{ steps.base.outputs.basename }}"
-          DEST="dietpi-base/${BASENAME}.img.xz"
-
-          if [[ -f "$DEST" ]]; then
-            echo "Found $DEST"
-            exit 0
+          set -euxo pipefail
+          if [ -f shell/Makefile ] || [ -f shell/sfsh.c ]; then
+            sudo apt-get update
+            sudo apt-get install -y build-essential
+            make -C shell clean || true
+            make -C shell
           fi
 
-          URL_INPUT="${{ github.event.inputs.dietpi_url }}"
-          if [[ -z "${URL_INPUT}" ]]; then
-            echo "ERROR: Missing $DEST and no 'dietpi_url' provided." >&2
-            exit 1
-          fi
-
-          mkdir -p dietpi-base
-          echo "Downloading: $URL_INPUT"
-          curl -fL --retry 5 --retry-delay 3 -o "$DEST" "$URL_INPUT"
-
-      - name: Validate DietPi base is real (not an LFS pointer)
-        shell: bash
-        run: |
-          set -euo pipefail
-          BASENAME="${{ steps.base.outputs.basename }}"
-          ls -lh "dietpi-base/${BASENAME}.img.xz"
-          file "dietpi-base/${BASENAME}.img.xz" || true
-          if ! xz -t "dietpi-base/${BASENAME}.img.xz" 2>/dev/null; then
-            echo "ERROR: ${BASENAME}.img.xz is not a valid xz (possibly an unfetched LFS pointer)." >&2
-            exit 1
-          fi
-
-      - name: Sanity checks (overlay + boot-side)
-        shell: bash
-        run: |
-          set -e
-          required=(
-            overlay/usr/local/bin/sourceforge-term
-            overlay/etc/systemd/system/sf20-terminal-tty1.service
-            overlay/usr/local/sf20/first-boot.sh
-            overlay/etc/profile.d/10-sf20-main.sh
-            overlay/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth
-            overlay/usr/share/plymouth/themes/sourceforge/sourceforge.script
-            os-pack/boot-side/sf20/sf20.repourl
-          )
-          missing=0
-          for f in "${required[@]}"; do
-            if [[ ! -f "$f" ]]; then
-              echo "MISSING: $f"
-              missing=1
-            else
-              echo "ok     : $f"
-            fi
-          done
-          if [[ -d overlay/boot ]]; then
-            echo "ERROR: overlay/boot must NOT exist (use os-pack/boot-side)" >&2
-            exit 1
-          fi
-          [[ $missing -eq 0 ]]
-
-      - name: Install build deps
-        shell: bash
+      - name: Install host deps (Docker)
         run: |
           sudo apt-get update
-          sudo apt-get install -y xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux
+          sudo apt-get install -y qemu-user-static debootstrap rsync xz-utils
 
-      - name: Pre-clean mount points (best effort)
-        if: always()
-        shell: bash
+      - name: Clone pi-gen
         run: |
-          sudo umount /mnt/imgboot 2>/dev/null || true
-          sudo umount /mnt/imgroot 2>/dev/null || true
-          sudo rm -rf /mnt/imgboot /mnt/imgroot
-          sudo mkdir -p /mnt/imgroot /mnt/imgboot
-          sudo chown "$USER":"$USER" /mnt/imgroot /mnt/imgboot || true
+          set -eux
+          git clone --depth 1 https://github.com/RPi-Distro/pi-gen.git
+          # Default branch builds Raspberry Pi OS Bookworm (arm64-capable)
 
-      - name: Prepare workspace (unxz base)
-        shell: bash
+      - name: Create SF20 custom stage inside pi-gen
         run: |
           set -euxo pipefail
-          BASENAME="${{ steps.base.outputs.basename }}"
-          mkdir -p build
-          cp "dietpi-base/${BASENAME}.img.xz" build/
-          cd build
-          unxz -T0 "${BASENAME}.img.xz"
-          ls -lh
+          SFSTAGE="pi-gen/stage2/99-sf20"
+          mkdir -p "$SFSTAGE/files"
+          mkdir -p "$SFSTAGE/00-run.chroot"
 
-      - name: Map & mount image partitions
-        id: mount
-        shell: bash
-        run: |
-          set -euxo pipefail
-          BASENAME="${{ steps.base.outputs.basename }}"
-          IMG="build/${BASENAME}.img"
-          LOOP=$(sudo losetup -f --show -P "$IMG")
-          echo "LOOP=$LOOP" >> "$GITHUB_ENV"
-          sudo partprobe "$LOOP" || true
-          sudo fdisk -l "$LOOP" || true
-          sudo mount ${LOOP}p2 /mnt/imgroot
-          sudo mount ${LOOP}p1 /mnt/imgboot
-          ls -la /mnt/imgboot || true
-          ls -la /mnt/imgroot || true
+          # 1) Copy our overlay into stage files/overlay (pi-gen will rsync it)
+          mkdir -p "$SFSTAGE/files/overlay"
+          rsync -a overlay/ "$SFSTAGE/files/overlay/"
 
-      - name: Apply overlay (root filesystem) + boot-side
-        shell: bash
-        run: |
-          set -euxo pipefail
-          # Root overlay
-          sudo rsync -a overlay/ /mnt/imgroot/
-          sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge-term || true
-          sudo chmod +x /mnt/imgroot/usr/local/sf20/first-boot.sh || true
-
-          # If your sfsh is built in-repo (e.g., shell/sfsh), install it:
-          if [[ -f shell/sfsh ]]; then
-            sudo install -m 0755 shell/sfsh /mnt/imgroot/usr/local/bin/sfsh
+          # If we built a local sfsh, drop it so stage installs it
+          if [ -f shell/sfsh ]; then
+            install -m 0755 shell/sfsh "$SFSTAGE/files/overlay/usr/local/bin/sfsh"
           fi
 
-          # Boot-side (FAT-safe rsync)
-          sudo mkdir -p /mnt/imgboot/sf20
-          sudo rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
-            os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
+          # 2) Boot-side files (will be placed after export). We'll do a post-export step.
+          mkdir -p "pi-gen/export-image/99-sf20-boot"
+          cat > "pi-gen/export-image/99-sf20-boot/01-run.sh" <<'EOS'
+          #!/bin/bash -e
+          # Runs inside export stage on the mounted image root at "$ROOTFS_DIR".
+          # Boot partition is at "$BOOTFS_DIR" in pi-gen export stage.
+          echo "[sf20] installing boot-side files to BOOTFS..."
+          mkdir -p "$BOOTFS_DIR/sf20"
+          rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
+            "$PWD/../../os-pack/boot-side/sf20/" "$BOOTFS_DIR/sf20/" || true
+          EOS
+          chmod +x "pi-gen/export-image/99-sf20-boot/01-run.sh"
 
-      - name: Neutralize DietPi & set SF20 as the OS (own init/tty1/shell)
-        shell: bash
-        run: |
-          set -euxo pipefail
+          # 3) Chroot script to own tty1, set root shell, and enable services
+          cat > "$SFSTAGE/00-run.chroot/01-sf20-setup" <<'EOS'
+          #!/bin/bash -e
+          # This runs INSIDE the chroot during stage2
+          set -eux
 
-          ROOT=/mnt/imgroot
-          BOOT=/mnt/imgboot
-
-          echo "== 1) Mask DietPi boot pipeline =="
-          for svc in dietpi-preboot dietpi-boot dietpi-firstboot dietpi-postboot dietpi-wifi-monitor dietpi-wait-for-network
-          do
-            if [ -f "$ROOT/etc/systemd/system/${svc}.service" ] || [ -f "$ROOT/lib/systemd/system/${svc}.service" ]; then
-              sudo systemctl --root="$ROOT" disable "${svc}" || true
-              sudo ln -sf /dev/null "$ROOT/etc/systemd/system/${svc}.service"
-              echo "masked ${svc}"
-            fi
-          done
-
-          echo "== 2) Own tty1 (replace getty@tty1 with sf20-terminal-tty1) =="
-          sudo systemctl --root="$ROOT" disable getty@tty1.service || true
-          sudo ln -sf /dev/null "$ROOT/etc/systemd/system/getty@tty1.service"
-          sudo systemctl --root="$ROOT" enable sf20-terminal-tty1.service || true
-
-          echo "== 3) Make sfsh the real root shell =="
-          if [ -f "$ROOT/etc/passwd" ]; then
-            sudo cp "$ROOT/etc/passwd" "$ROOT/etc/passwd.sf20.bak"
-            sudo awk -F: 'BEGIN{OFS=":"} $1=="root"{ $7="/usr/local/bin/sfsh" } {print}' \
-              "$ROOT/etc/passwd.sf20.bak" | sudo tee "$ROOT/etc/passwd" >/dev/null
+          # ensure binaries are executable
+          chmod +x /usr/local/bin/sourceforge-term || true
+          if [ -f /usr/local/bin/sfsh ]; then
+            chmod +x /usr/local/bin/sfsh
           fi
 
-          echo "== 4) Remove DietPi branding =="
-          sudo rm -f "$ROOT/etc/update-motd.d/"*dietpi* 2>/dev/null || true
-          echo "SourceForge 2.0 OS" | sudo tee "$ROOT/etc/issue" >/dev/null
-          echo "SourceForge 2.0 OS" | sudo tee "$ROOT/etc/issue.net" >/dev/null
-          sudo rm -f "$ROOT/etc/profile.d/"*dietpi* 2>/dev/null || true
+          # own tty1 (mask getty@tty1; our service provides the terminal)
+          systemctl disable getty@tty1.service || true
+          ln -sf /dev/null /etc/systemd/system/getty@tty1.service || true
+          systemctl enable sf20-terminal-tty1.service || true
 
-          echo "== 5) Kill DietPi boot config on /boot =="
-          sudo rm -f "$BOOT/dietpi.txt" "$BOOT/dietpi-wifi.txt" 2>/dev/null || true
-
-          echo "== 6) Ensure our terminal/shell exist and are executable =="
-          sudo chmod +x "$ROOT/usr/local/bin/sourceforge-term" || true
-          if [ -f "$ROOT/usr/local/bin/sfsh" ]; then
-            sudo chmod +x "$ROOT/usr/local/bin/sfsh"
+          # make sfsh the root shell (fallback if not present: leave /bin/bash)
+          if [ -x /usr/local/bin/sfsh ]; then
+            cp /etc/passwd /etc/passwd.sf20.bak
+            awk -F: 'BEGIN{OFS=":"} $1=="root"{ $7="/usr/local/bin/sfsh" } {print}' \
+              /etc/passwd.sf20.bak > /etc/passwd.tmp
+            mv /etc/passwd.tmp /etc/passwd
           fi
 
-          echo "== 7) Set Plymouth theme to SourceForge (if present) =="
-          if [ -f "$ROOT/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth" ]; then
-            sudo mkdir -p "$ROOT/etc/plymouth"
-            cat <<'EOF' | sudo tee "$ROOT/etc/plymouth/plymouthd.conf" >/dev/null
-[Daemon]
-Theme=sourceforge
-EOF
+          # set plymouth theme (if present). Bookworm image may not ship plymouth by default.
+          if [ -f /usr/share/plymouth/themes/sourceforge/sourceforge.plymouth ]; then
+            mkdir -p /etc/plymouth
+            cat > /etc/plymouth/plymouthd.conf <<EOF
+          [Daemon]
+          Theme=sourceforge
+          EOF
           fi
 
-          echo "== 8) Final sanity output =="
-          grep '^root:' "$ROOT/etc/passwd" || true
-          ls -l "$ROOT/usr/local/bin/sourceforge-term" || true
-          ls -l "$ROOT/usr/local/bin/sfsh" || true
-          sudo systemctl --root="$ROOT" list-unit-files | grep -E 'sf20|dietpi|getty@tty1' || true
+          # set issue banners
+          echo "SourceForge 2.0 OS" > /etc/issue
+          echo "SourceForge 2.0 OS" > /etc/issue.net
+          EOS
+          chmod +x "$SFSTAGE/00-run.chroot/01-sf20-setup"
 
-      - name: Unmount & detach
-        if: always()
-        shell: bash
+      - name: Configure pi-gen (arm64, minimal stages)
         run: |
           set -euxo pipefail
-          sync || true
-          sudo umount /mnt/imgboot || true
-          sudo umount /mnt/imgroot || true
-          if [ -n "${LOOP:-}" ]; then sudo losetup -d "$LOOP" || true; fi
-          sudo rm -rf /mnt/imgboot /mnt/imgroot || true
+          cat > pi-gen/config <<'EOF'
+          IMG_NAME=sf20
+          TARGET_HOSTNAME=sf20
+          ENABLE_SSH=1
+          LOCALE_DEFAULT="en_US.UTF-8"
+          KEYBOARD_KEYMAP="us"
+          KEYBOARD_LAYOUT="English (US)"
+          TIMEZONE_DEFAULT="UTC"
 
-      - name: Recompress image (rename by board)
-        shell: bash
+          # Build aarch64 image
+          BUILD_ARM64=1
+
+          # Keep it minimal: stage0+stage1+stage2, with our 99-sf20 step
+          STAGE_LIST="stage0 stage1 stage2"
+          EOF
+
+      - name: Run pi-gen in Docker
         run: |
           set -euxo pipefail
-          BASENAME="${{ steps.base.outputs.basename }}"
-          SHORT="${{ steps.base.outputs.shortname }}"
-          xz -9v "build/${BASENAME}.img"
-          mv "build/${BASENAME}.img.xz" "build/sf20-${SHORT}.img.xz"
-          ls -lh build
+          cd pi-gen
+          ./build-docker.sh
+
+      - name: Find built image
+        id: findimg
+        run: |
+          set -euxo pipefail
+          # pi-gen writes to deploy/ by default
+          ls -lh pi-gen/deploy || true
+          # pick the newest .img
+          IMG="$(ls -1t pi-gen/deploy/*.img 2>/dev/null | head -n1 || true)"
+          if [ -z "$IMG" ]; then
+            echo "No image found in pi-gen/deploy/" >&2
+            exit 1
+          fi
+          echo "img=$IMG" >> "$GITHUB_OUTPUT"
+          ls -lh "$IMG"
+
+      - name: Rename by board & compress
+        run: |
+          set -euxo pipefail
+          SHORT="${{ github.event.inputs.board && github.event.inputs.board || 'rpi234' }}"
+          cp "${{ steps.findimg.outputs.img }}" "sf20-${SHORT}.img"
+          xz -9v "sf20-${SHORT}.img"
+          ls -lh "sf20-${SHORT}.img.xz"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sf20-${{ steps.base.outputs.shortname }}
-          path: build/sf20-*.img.xz
+          name: sf20-${{ github.event.inputs.board && github.event.inputs.board || 'rpi234' }}
+          path: sf20-*.img.xz
           if-no-files-found: error
