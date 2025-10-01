@@ -86,8 +86,7 @@ jobs:
           set -eux
           git clone --depth 1 https://github.com/RPi-Distro/pi-gen.git
 
-      # Force ARM64 build + sane mirror + no-check-gpg in config
-      - name: Write pi-gen config
+      - name: Write pi-gen config (ARM64 + mirror + no-check-gpg)
         shell: bash
         run: |
           set -eux
@@ -100,14 +99,10 @@ jobs:
           KEYBOARD_LAYOUT="English (US)"
           TIMEZONE_DEFAULT="UTC"
 
-          # ARM64 rootfs target
           BUILD_ARM64=1
           STAGE_LIST="stage0 stage1 stage2"
 
-          # Stable mirror
           APT_MIRROR=http://deb.debian.org/debian
-
-          # Ensure stage0 doesn't choke on signatures in CI
           DEBOOTSTRAP_EXTRA_FLAGS="--no-check-gpg"
 
           SKIP_NOOBS=1
@@ -115,7 +110,6 @@ jobs:
           echo "== pi-gen/config =="
           cat pi-gen/config
 
-      # Some pi-gen releases ignore DEBOOTSTRAP_EXTRA_FLAGS in stage0 ? hard patch it
       - name: Patch stage0 to always add --no-check-gpg
         shell: bash
         run: |
@@ -184,8 +178,8 @@ jobs:
           EOS
           chmod +x "$EXP/01-run.sh"
 
-      # >>> Use our OWN Dockerfile so NO CHANCE of i386 base <<<
-      - name: Write custom Dockerfile (bookworm, amd64)
+      # Our OWN Dockerfile so no chance of i386 base
+      - name: Write custom Dockerfile (bookworm, amd64, all pi-gen deps)
         shell: bash
         run: |
           set -eux
@@ -198,20 +192,19 @@ jobs:
                 bc coreutils bzip2 zip unzip kmod udev cpio \
                 debootstrap qemu-user-static parted kpartx dosfstools \
                 curl wget gnupg dirmngr sudo jq \
+                # required by pi-gen "Required dependencies not installed"
+                quilt zerofree libcap2-bin libarchive-tools xxd file pigz arch-test \
               && rm -rf /var/lib/apt/lists/*
 
           WORKDIR /pi-gen
-          # Copy the prepared pi-gen tree (with our config + patches)
           COPY . /pi-gen
-          # Make sure scripts are executable
           RUN find /pi-gen -type f -name "*.sh" -exec chmod +x {} \; || true
 
-          # Default command runs pi-gen inside the container
           CMD ["/bin/bash", "-lc", "./build.sh"]
           DOCKER
 
           echo "== Dockerfile.sf20 HEAD =="
-          head -n 40 pi-gen/Dockerfile.sf20
+          head -n 60 pi-gen/Dockerfile.sf20
 
       - name: Build pi-gen container (forced amd64)
         shell: bash
@@ -227,7 +220,6 @@ jobs:
           DOCKER_DEFAULT_PLATFORM: linux/amd64
         run: |
           set -eux
-          # Run privileged (loop devices), mount deploy for artifacts
           docker run --privileged --rm \
             -e IMG_NAME=sf20 \
             -e BUILD_ARM64=1 \
