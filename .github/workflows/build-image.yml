@@ -1,4 +1,4 @@
-name: Build SourceForge 2.0 (pi-gen from source)
+name: Build SourceForge 2.0 (from source via pi-gen)
 
 on:
   workflow_dispatch:
@@ -9,8 +9,8 @@ on:
         required: true
         default: rpi234
         options:
-          - rpi234   # Raspberry Pi 2/3/4 (arm64 image; Pi 2 may not boot 64-bit)
-          - rpi5     # Raspberry Pi 5 (arm64)
+          - rpi234   # Raspberry Pi 2/3/4 (image is 64-bit; Pi 2 may not boot 64-bit)
+          - rpi5     # Raspberry Pi 5
   push:
     branches: [ main ]
     paths:
@@ -28,7 +28,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build sfsh (optional, if you keep sources in repo)
+      - name: Set BOARD env (default rpi234)
+        shell: bash
+        run: |
+            if [ -z "${{ github.event.inputs.board }}" ]; then
+              echo "BOARD=rpi234" >> "$GITHUB_ENV"
+            else
+              echo "BOARD=${{ github.event.inputs.board }}" >> "$GITHUB_ENV"
+            fi
+
+      - name: Preflight: required files present?
+        shell: bash
+        run: |
+          set -e
+          need=(
+            overlay/usr/local/bin/sourceforge-term
+            overlay/etc/systemd/system/sf20-terminal-tty1.service
+            overlay/usr/local/sf20/first-boot.sh
+            overlay/etc/profile.d/10-sf20-main.sh
+            overlay/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth
+            overlay/usr/share/plymouth/themes/sourceforge/sourceforge.script
+            os-pack/boot-side/sf20/sf20.repourl
+          )
+          miss=0
+          for f in "${need[@]}"; do
+            if [ ! -f "$f" ]; then echo "MISSING $f"; miss=1; else echo "ok      $f"; fi
+          done
+          if [ -d overlay/boot ]; then
+            echo "ERROR overlay/boot must NOT exist; put boot bits under os-pack/boot-side/" >&2
+            exit 1
+          fi
+          [ "$miss" -eq 0 ]
+
+      - name: Build sfsh (if sources exist)
         shell: bash
         run: |
           set -euxo pipefail
@@ -37,74 +69,60 @@ jobs:
             sudo apt-get install -y build-essential
             make -C shell clean || true
             make -C shell
+          else
+            echo "No shell sources; sourceforge-term will fallback to /bin/bash -l"
           fi
 
-      - name: Install host deps (Docker)
+      - name: Install host deps for pi-gen
+        shell: bash
         run: |
+          set -eux
           sudo apt-get update
           sudo apt-get install -y qemu-user-static debootstrap rsync xz-utils
 
       - name: Clone pi-gen
+        shell: bash
         run: |
           set -eux
           git clone --depth 1 https://github.com/RPi-Distro/pi-gen.git
-          # Default branch builds Raspberry Pi OS Bookworm (arm64-capable)
 
-      - name: Create SF20 custom stage inside pi-gen
+      - name: Create SF20 custom stage in pi-gen
+        shell: bash
         run: |
           set -euxo pipefail
-          SFSTAGE="pi-gen/stage2/99-sf20"
-          mkdir -p "$SFSTAGE/files"
-          mkdir -p "$SFSTAGE/00-run.chroot"
+          STAGE="pi-gen/stage2/99-sf20"
+          mkdir -p "$STAGE/files/overlay" "$STAGE/00-run.chroot"
 
-          # 1) Copy our overlay into stage files/overlay (pi-gen will rsync it)
-          mkdir -p "$SFSTAGE/files/overlay"
-          rsync -a overlay/ "$SFSTAGE/files/overlay/"
+          # 1) Root overlay into stage
+          rsync -a overlay/ "$STAGE/files/overlay/"
 
-          # If we built a local sfsh, drop it so stage installs it
+          # If we built sfsh, include it so it lands in /usr/local/bin/sfsh
           if [ -f shell/sfsh ]; then
-            install -m 0755 shell/sfsh "$SFSTAGE/files/overlay/usr/local/bin/sfsh"
+            install -m 0755 shell/sfsh "$STAGE/files/overlay/usr/local/bin/sfsh"
           fi
 
-          # 2) Boot-side files (will be placed after export). We'll do a post-export step.
-          mkdir -p "pi-gen/export-image/99-sf20-boot"
-          cat > "pi-gen/export-image/99-sf20-boot/01-run.sh" <<'EOS'
+          # 2) Chroot script: own tty1, set root shell to sfsh, banners, plymouth
+          cat > "$STAGE/00-run.chroot/01-sf20-setup" <<'EOS'
           #!/bin/bash -e
-          # Runs inside export stage on the mounted image root at "$ROOTFS_DIR".
-          # Boot partition is at "$BOOTFS_DIR" in pi-gen export stage.
-          echo "[sf20] installing boot-side files to BOOTFS..."
-          mkdir -p "$BOOTFS_DIR/sf20"
-          rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
-            "$PWD/../../os-pack/boot-side/sf20/" "$BOOTFS_DIR/sf20/" || true
-          EOS
-          chmod +x "pi-gen/export-image/99-sf20-boot/01-run.sh"
-
-          # 3) Chroot script to own tty1, set root shell, and enable services
-          cat > "$SFSTAGE/00-run.chroot/01-sf20-setup" <<'EOS'
-          #!/bin/bash -e
-          # This runs INSIDE the chroot during stage2
           set -eux
-
-          # ensure binaries are executable
+          # Ensure executables
           chmod +x /usr/local/bin/sourceforge-term || true
-          if [ -f /usr/local/bin/sfsh ]; then
-            chmod +x /usr/local/bin/sfsh
-          fi
-
-          # own tty1 (mask getty@tty1; our service provides the terminal)
+          if [ -f /usr/local/bin/sfsh ]; then chmod +x /usr/local/bin/sfsh; fi
+          # Own tty1
           systemctl disable getty@tty1.service || true
           ln -sf /dev/null /etc/systemd/system/getty@tty1.service || true
           systemctl enable sf20-terminal-tty1.service || true
-
-          # make sfsh the root shell (fallback if not present: leave /bin/bash)
+          # Root shell -> sfsh (if present)
           if [ -x /usr/local/bin/sfsh ]; then
             cp /etc/passwd /etc/passwd.sf20.bak
             awk -F: 'BEGIN{OFS=":"} $1=="root"{ $7="/usr/local/bin/sfsh" } {print}' \
               /etc/passwd.sf20.bak > /etc/passwd.tmp
             mv /etc/passwd.tmp /etc/passwd
           fi
-
-          # set plymouth theme (if present). Bookworm image may not ship plymouth by default.
+          # Banners
+          echo "SourceForge 2.0 OS" > /etc/issue
+          echo "SourceForge 2.0 OS" > /etc/issue.net
+          # Plymouth (if theme exists)
           if [ -f /usr/share/plymouth/themes/sourceforge/sourceforge.plymouth ]; then
             mkdir -p /etc/plymouth
             cat > /etc/plymouth/plymouthd.conf <<EOF
@@ -112,14 +130,25 @@ jobs:
           Theme=sourceforge
           EOF
           fi
-
-          # set issue banners
-          echo "SourceForge 2.0 OS" > /etc/issue
-          echo "SourceForge 2.0 OS" > /etc/issue.net
           EOS
-          chmod +x "$SFSTAGE/00-run.chroot/01-sf20-setup"
+          chmod +x "$STAGE/00-run.chroot/01-sf20-setup"
 
-      - name: Configure pi-gen (arm64, minimal stages)
+          # 3) Export hook: embed your boot-side in the stage itself so paths resolve
+          EXP="pi-gen/export-image/99-sf20-boot"
+          mkdir -p "$EXP/files/boot-side/sf20"
+          rsync -a os-pack/boot-side/sf20/ "$EXP/files/boot-side/sf20/"
+          cat > "$EXP/01-run.sh" <<'EOS'
+          #!/bin/bash -e
+          # Runs during export; $BOOTFS_DIR is the mounted FAT partition.
+          echo "[sf20] copying boot-side files into BOOTFS..."
+          mkdir -p "$BOOTFS_DIR/sf20"
+          rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
+            "$PWD/99-sf20-boot/files/boot-side/sf20/" "$BOOTFS_DIR/sf20/" || true
+          EOS
+          chmod +x "$EXP/01-run.sh"
+
+      - name: Configure pi-gen (arm64; minimal stages; robust mirrors; skip GPG check)
+        shell: bash
         run: |
           set -euxo pipefail
           cat > pi-gen/config <<'EOF'
@@ -131,38 +160,53 @@ jobs:
           KEYBOARD_LAYOUT="English (US)"
           TIMEZONE_DEFAULT="UTC"
 
-          # Build aarch64 image
+          # Build 64-bit image
           BUILD_ARM64=1
 
-          # Keep it minimal: stage0+stage1+stage2, with our 99-sf20 step
+          # Keep small: stage0+stage1+stage2 (+ our 99-sf20)
           STAGE_LIST="stage0 stage1 stage2"
+
+          # Use stable Debian mirror
+          APT_MIRROR=http://deb.debian.org/debian
+
+          # Workaround CI GPG signature hiccups
+          DEBOOTSTRAP_EXTRA_FLAGS="--no-check-gpg"
+
+          # Speed up: skip NOOBS
+          SKIP_NOOBS=1
           EOF
 
-      - name: Run pi-gen in Docker
+      - name: Build image (Docker) with sane base image/platform
+        shell: bash
         run: |
           set -euxo pipefail
           cd pi-gen
+          # Force a sane base to kill i386/trixie mismatch
+          export BASE_IMAGE=debian:bookworm
+          export CONTAINER_ARCH=amd64
           ./build-docker.sh
 
       - name: Find built image
         id: findimg
+        shell: bash
         run: |
           set -euxo pipefail
-          # pi-gen writes to deploy/ by default
           ls -lh pi-gen/deploy || true
-          # pick the newest .img
-          IMG="$(ls -1t pi-gen/deploy/*.img 2>/dev/null | head -n1 || true)"
+          IMG=$(ls -1t pi-gen/deploy/*.img 2>/dev/null | head -n1 || true)
           if [ -z "$IMG" ]; then
-            echo "No image found in pi-gen/deploy/" >&2
+            echo "No image found." >&2
+            # Dump pi-gen logs to help debug
+            find pi-gen -maxdepth 2 -name "build.log" -print -exec tail -n 200 {} \;
             exit 1
           fi
           echo "img=$IMG" >> "$GITHUB_OUTPUT"
           ls -lh "$IMG"
 
       - name: Rename by board & compress
+        shell: bash
         run: |
           set -euxo pipefail
-          SHORT="${{ github.event.inputs.board && github.event.inputs.board || 'rpi234' }}"
+          SHORT="${BOARD}"
           cp "${{ steps.findimg.outputs.img }}" "sf20-${SHORT}.img"
           xz -9v "sf20-${SHORT}.img"
           ls -lh "sf20-${SHORT}.img.xz"
@@ -170,6 +214,6 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sf20-${{ github.event.inputs.board && github.event.inputs.board || 'rpi234' }}
+          name: sf20-${{ env.BOARD }}
           path: sf20-*.img.xz
           if-no-files-found: error
