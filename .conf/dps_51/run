@@ -1,0 +1,28 @@
+#!/bin/dash
+#////////////////////////////////////
+# DietPi OpenTyrian Run Script
+#
+#////////////////////////////////////
+# Created by Daniel Knight / daniel.knight@dietpi.com / dietpi.com
+#
+# Info:
+# - Location: /usr/games/opentyrian/run
+# - Starts OpenTyrian
+# - Starts X if not already running
+#
+# Usage:
+# - run
+#////////////////////////////////////
+readonly FP_DIR='/usr/games/opentyrian'
+
+# X server already running
+if pgrep Xorg > /dev/null; then
+
+	exec "$FP_DIR/opentyrian" -t "$FP_DIR/data"
+
+# No X, init it
+else
+
+	exec xinit "$FP_DIR/opentyrian" -t "$FP_DIR/data"
+
+fi

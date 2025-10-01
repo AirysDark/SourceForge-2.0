@@ -1,0 +1,8 @@
+#!/bin/dash -e
+echo 'Removing obsolete initramfs images'
+find /boot -maxdepth 1 -name 'initrd.img-*' -o -name 'uInitrd-*' | while read -r f
+do
+	[ ! -d "/lib/modules/${f#*-}" ] || continue
+	rm -v "$f"
+done
+exit 0

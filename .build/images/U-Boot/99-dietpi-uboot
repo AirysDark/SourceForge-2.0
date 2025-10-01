@@ -1,0 +1,3 @@
+#!/bin/dash -e
+ln -sfv "initrd.img-$1" /boot/initrd.img
+exit 0

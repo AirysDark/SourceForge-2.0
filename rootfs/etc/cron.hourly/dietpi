@@ -1,0 +1,38 @@
+#!/bin/bash
+{
+	#////////////////////////////////////
+	# DietPi Cron.Hourly script
+	#
+	#////////////////////////////////////
+	#
+	# Info:
+	# - Location: /etc/cron.hourly/dietpi
+	#
+	#////////////////////////////////////
+
+	# Assure that whiptail dialogues are skipped, even when the script is called manually, since STDOUT is redirected
+	export G_INTERACTIVE=0
+
+	#----------------------------------------------------------------
+	# Main Loop
+	#----------------------------------------------------------------
+	# Sync system time, if mode 3 (hourly) is detected
+	grep -q '^[[:blank:]]*CONFIG_NTP_MODE=3' /boot/dietpi.txt && /boot/dietpi/func/run_ntpd 1
+	#----------------------------------------------------------------
+	# Clear /var/log files, if DietPi-RAMlog is detected
+	[[ -f '/boot/dietpi/.installed' ]] && INDEX_LOGGING=$(sed -n '/^[[:blank:]]*INDEX_LOGGING=/{s/^[^=]*=//p;q}' /boot/dietpi/.installed)
+	# - Mode -1: Clear only
+	if (( ${INDEX_LOGGING:=0} == -1 )); then
+
+		/boot/dietpi/func/dietpi-logclear 1
+
+	# - Mode -2: Append logs at /root/logfile_storage, then clear
+	elif (( $INDEX_LOGGING == -2 )); then
+
+		/boot/dietpi/func/dietpi-logclear 0
+
+	fi
+	#----------------------------------------------------------------
+	exit
+	#----------------------------------------------------------------
+} > /dev/null

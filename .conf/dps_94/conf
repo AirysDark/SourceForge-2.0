@@ -1,0 +1,79 @@
+# DietPi ProFTPD default config
+# Location: /etc/proftpd/proftpd.conf
+# Docs: http://www.proftpd.org/docs/directives/linked/configuration.html
+
+# Includes DSO modules
+Include /etc/proftpd/modules.conf
+
+# Set "off" to disable IPv6 support which is problematic on IPv4 only boxes.
+UseIPv6 on
+# If set "on" you can experience a longer connection delay in many cases.
+IdentLookups off
+UseReverseDNS off
+
+ServerName "DietPi FTP"
+ServerType standalone
+DeferWelcome off
+
+DefaultServer on
+ShowSymlinks on
+
+# Permit resuming downloads
+AllowRetrieveRestart On
+# Permit resuming uploads
+AllowStoreRestart On
+TimeoutNoTransfer 120
+TimeoutStalled 120
+TimeoutIdle 240
+DisplayLogin welcome.msg
+DisplayChdir .message true
+ListOptions "-l"
+
+DenyFilter \*.*/
+
+DefaultRoot /mnt/dietpi_userdata
+
+Port 21
+MaxInstances 8
+
+RootLogin off
+User dietpi
+Group dietpi
+Umask 002 002
+AllowOverwrite on
+
+TransferLog /var/log/proftpd/xferlog
+SystemLog /var/log/proftpd/proftpd.log
+# Stop /var/log/wtmp logging: No such file or directory -Gordon Williams change
+WtmpLog off
+# /var/log/lastlog logging
+#UseLastlog on
+
+<IfModule mod_quotatab.c>
+QuotaEngine off
+</IfModule>
+
+<IfModule mod_ratio.c>
+Ratios off
+</IfModule>
+
+<IfModule mod_delay.c>
+DelayEngine on
+</IfModule>
+
+<IfModule mod_ctrls.c>
+ControlsEngine off
+ControlsMaxClients 2
+ControlsLog /var/log/proftpd/controls.log
+ControlsInterval 5
+ControlsSocket /run/proftpd/proftpd.sock
+</IfModule>
+
+<IfModule mod_ctrls_admin.c>
+AdminControlsEngine off
+</IfModule>
+
+#Include /etc/proftpd/tls.conf
+
+# Include other custom configuration files
+Include /etc/proftpd/conf.d/
