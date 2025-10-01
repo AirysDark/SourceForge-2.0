@@ -216,11 +216,18 @@ jobs:
           set -eux
           docker build --platform linux/amd64 -t sf20-pigen -f pi-gen/Dockerfile.sf20 pi-gen
 
-      - name: Ensure binfmt_misc is active (fallback)
+      # ? Ensure binfmt_misc is loaded & mounted on the HOST
+      - name: Enable binfmt_misc on host
         shell: bash
         run: |
           set -eux
           sudo modprobe binfmt_misc || true
+          if [ ! -e /proc/sys/fs/binfmt_misc/register ]; then
+            # mount binfmt_misc if not already mounted
+            echo "Mounting binfmt_misc on host..."
+            sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
+          fi
+          # Register arm/arm64 qemu handlers (idempotent)
           docker run --privileged --rm tonistiigi/binfmt --install arm64,arm
 
       - name: Run pi-gen build in container
@@ -234,6 +241,7 @@ jobs:
             -e BUILD_ARM64=1 \
             -e APT_MIRROR=http://deb.debian.org/debian \
             -e DEBOOTSTRAP_EXTRA_FLAGS="--no-check-gpg" \
+            -v /proc/sys/fs/binfmt_misc:/proc/sys/fs/binfmt_misc \  # ? bind binfmt into container
             -v "$PWD/pi-gen/deploy":/pi-gen/deploy \
             sf20-pigen
 
