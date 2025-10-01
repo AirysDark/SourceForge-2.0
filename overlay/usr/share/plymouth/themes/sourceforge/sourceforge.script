@@ -1,15 +1,12 @@
-// Minimal text plymouth theme
+# Plymouth script - minimal text
 message_sprite = Sprite();
-fun draw_message() {
-  my_message = "SourceForge 2.0 OS";
-  message_sprite.SetX(10);
-  message_sprite.SetY(10);
-  message_sprite.SetZ(10);
-  message_sprite.SetVisible(true);
-  message_sprite.SetText(my_message);
+fun refresh() {
+  Plymouth.SetDisplayNormal();
+  Plymouth.SetBackgroundTopColor(0.0, 0.0, 0.0);
+  Plymouth.SetBackgroundBottomColor(0.0, 0.0, 0.0);
+  Plymouth.SetForegroundColor(255, 255, 255);
+  message_sprite.SetX(0.1 * Window.GetWidth());
+  message_sprite.SetY(0.8 * Window.GetHeight());
+  message_sprite.SetText("SourceForge 2.0 is booting...");
 }
-fun splash_start () {
-  Plymouth.SetBackgroundColor (0.0, 0.0, 0.0);
-  draw_message();
-}
-fun splash_end () { }
+refresh();

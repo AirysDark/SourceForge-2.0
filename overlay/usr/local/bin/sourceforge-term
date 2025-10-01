@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 [ -t 0 ] || exec setsid -w /usr/local/bin/sourceforge-term
-
 command -v tput >/dev/null 2>&1 && tput reset || clear
 stty sane 2>/dev/null || true
-
 exec /usr/local/bin/sfsh -l
