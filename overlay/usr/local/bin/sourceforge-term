@@ -1,11 +1,2 @@
 #!/bin/bash
-# SourceForge 2.0 Terminal launcher
-# Always drop into the SourceForge shell (sfsh) on tty terminals.
-# If sfsh is missing, fall back to /bin/bash.
-
-if command -v sfsh >/dev/null 2>&1; then
-  exec /usr/local/bin/sfsh
-else
-  echo "sfsh not found, falling back to /bin/bash" >&2
-  exec /bin/bash -l
-fi
+exec /usr/local/bin/sfsh -l
