@@ -134,8 +134,9 @@ jobs:
           set -euxo pipefail
           sudo systemctl --root=/mnt/imgroot enable sf20-firstboot.service
           sudo systemctl --root=/mnt/imgroot enable sf20-terminal-tty1.service
-          sudo chroot /mnt/imgroot /bin/bash -lc 'systemctl is-enabled sf20-firstboot.service || true'
-          sudo chroot /mnt/imgroot /bin/bash -lc 'systemctl is-enabled sf20-terminal-tty1.service || true'
+          # Verify enablement (no chroot needed)
+          sudo systemctl --root=/mnt/imgroot is-enabled sf20-firstboot.service || true
+          sudo systemctl --root=/mnt/imgroot is-enabled sf20-terminal-tty1.service || true
 
       - name: Unmount & detach
         if: always()
