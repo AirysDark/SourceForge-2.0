@@ -7,10 +7,10 @@ on:
         description: "Target board"
         type: choice
         required: true
-        default: rpi234
+        default: Raspberry pi 2/3/4
         options:
-          - rpi234
-          - rpi5
+          - Raspberry pi 2/3/4
+          - Raspberry pi 5
   push:
     branches: [ main ]
     paths:
@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 75
 
     env:
-      BOARD: ${{ inputs.board || 'rpi234' }}
+      BOARD: ${{ inputs.board || 'Raspberry pi 2/3/4' }}
 
     steps:
       - name: Checkout (with Git LFS)
@@ -38,11 +38,12 @@ jobs:
         run: |
           set -euo pipefail
           case "${BOARD}" in
-            rpi234) BASENAME="DietPi_RPi234-ARMv8-Trixie" ;;
-            rpi5)   BASENAME="DietPi_RPi5-ARMv8-Trixie" ;;
+            Raspberry pi 2/3/4) BASENAME="DietPi_RPi234-ARMv8-Trixie" ;;
+            Raspberry pi 5)   BASENAME="DietPi_RPi5-ARMv8-Trixie" ;;
             *)      echo "Unknown BOARD: ${BOARD}" >&2; exit 1 ;;
           esac
           echo "basename=${BASENAME}" >> "$GITHUB_OUTPUT"
+          echo "shortname=${BOARD}" >> "$GITHUB_OUTPUT"
           if [ ! -f "dietpi-base/${BASENAME}.img.xz" ]; then
             echo "Missing: dietpi-base/${BASENAME}.img.xz" >&2
             echo "Place the DietPi base image into dietpi-base/ (Git LFS) or add a download step." >&2
@@ -125,7 +126,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo mkdir -p /mnt/imgboot/sf20
-          # FAT-safe rsync (don?t preserve perms/owners/groups)
+          # FAT-safe rsync (don't preserve perms/owners/groups)
           sudo rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
             os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
 
@@ -148,16 +149,18 @@ jobs:
           if [ -n "${LOOP:-}" ]; then sudo losetup -d "$LOOP" || true; fi
           sudo rm -rf /mnt/imgboot /mnt/imgroot || true
 
-      - name: Recompress image
+      - name: Recompress image (rename by board)
         run: |
           set -euxo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
+          SHORTNAME="${{ steps.base.outputs.shortname }}"
           xz -9v "build/${BASENAME}.img"
+          mv "build/${BASENAME}.img.xz" "build/sf20-${SHORTNAME}.img.xz"
           ls -lh build
 
       - name: Upload artifact (.img.xz)
         uses: actions/upload-artifact@v4
         with:
-          name: sf20-${{ env.BOARD }}-img-${{ github.sha }}
-          path: build/*.img.xz
+          name: sf20-${{ steps.base.outputs.shortname }}
+          path: build/sf20-*.img.xz
           if-no-files-found: error
