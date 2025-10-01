@@ -1,4 +1,4 @@
-name: Build SourceForge 2.0 (from source via pi-gen, forced amd64 container)
+name: Build SourceForge 2.0 (from source via pi-gen, ARM64)
 
 on:
   workflow_dispatch:
@@ -73,12 +73,17 @@ jobs:
             echo "No custom shell sources; sourceforge-term will fallback to /bin/bash -l"
           fi
 
-      - name: Install host deps (docker + helpers)
+      - name: Install host deps (helpers)
         shell: bash
         run: |
           set -eux
           sudo apt-get update
           sudo apt-get install -y qemu-user-static debootstrap rsync xz-utils
+
+      - name: Set up QEMU (arm64)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64,arm
 
       - name: Clone pi-gen
         shell: bash
@@ -178,7 +183,6 @@ jobs:
           EOS
           chmod +x "$EXP/01-run.sh"
 
-      # Our OWN Dockerfile so no chance of i386 base
       - name: Write custom Dockerfile (bookworm, amd64, all pi-gen deps)
         shell: bash
         run: |
@@ -192,7 +196,6 @@ jobs:
                 bc coreutils bzip2 zip unzip kmod udev cpio \
                 debootstrap qemu-user-static parted kpartx dosfstools \
                 curl wget gnupg dirmngr sudo jq \
-                # required by pi-gen "Required dependencies not installed"
                 quilt zerofree libcap2-bin libarchive-tools xxd file pigz arch-test \
               && rm -rf /var/lib/apt/lists/*
 
@@ -203,8 +206,7 @@ jobs:
           CMD ["/bin/bash", "-lc", "./build.sh"]
           DOCKER
 
-          echo "== Dockerfile.sf20 HEAD =="
-          head -n 60 pi-gen/Dockerfile.sf20
+          head -n 50 pi-gen/Dockerfile.sf20
 
       - name: Build pi-gen container (forced amd64)
         shell: bash
@@ -213,6 +215,13 @@ jobs:
         run: |
           set -eux
           docker build --platform linux/amd64 -t sf20-pigen -f pi-gen/Dockerfile.sf20 pi-gen
+
+      - name: Ensure binfmt_misc is active (fallback)
+        shell: bash
+        run: |
+          set -eux
+          sudo modprobe binfmt_misc || true
+          docker run --privileged --rm tonistiigi/binfmt --install arm64,arm
 
       - name: Run pi-gen build in container
         shell: bash
