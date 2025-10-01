@@ -14,10 +14,11 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'overlay/**'
-      - 'os-pack/**'
-      - 'dietpi-base/**'
-      - '.github/workflows/build-dietpi.yml'
+      - "overlay/**"
+      - "os-pack/**"
+      - "dietpi-base/**"
+      - "shell/**"
+      - ".github/workflows/build-image.yml"
 
 jobs:
   build:
@@ -33,8 +34,9 @@ jobs:
         with:
           lfs: true
 
-      - name: Resolve base image (label ? key)
+      - name: Resolve base image (label -> key)
         id: base
+        shell: bash
         run: |
           set -euo pipefail
           case "${BOARD_LABEL}" in
@@ -47,22 +49,53 @@ jobs:
           echo "basename=${BASENAME}"   >> "$GITHUB_OUTPUT"
           if [ ! -f "dietpi-base/${BASENAME}.img.xz" ]; then
             echo "Missing: dietpi-base/${BASENAME}.img.xz" >&2
-            echo "Place the DietPi base image into dietpi-base/ (Git LFS) or add a download step." >&2
             exit 1
           fi
 
       - name: Validate DietPi base is real (not LFS pointer)
+        shell: bash
         run: |
           set -euo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
           ls -lh "dietpi-base/${BASENAME}.img.xz"
           file "dietpi-base/${BASENAME}.img.xz"
           if ! xz -t "dietpi-base/${BASENAME}.img.xz" 2>/dev/null; then
-            echo "ERROR: ${BASENAME}.img.xz is not a valid xz (likely an LFS pointer not fetched)." >&2
+            echo "ERROR: ${BASENAME}.img.xz is not a valid xz" >&2
             exit 1
           fi
 
+      - name: Install build deps
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux \
+            build-essential
+
+      # Build sfsh and run an inline smoke test (no extra files, no heredoc)
+      - name: Build and test SourceForge 2.0 Shell
+        working-directory: shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          make clean
+          make install
+          BIN="../overlay/usr/local/bin/sfsh"
+          if [ ! -x "$BIN" ]; then
+            echo "sfsh binary not found at $BIN" >&2
+            exit 1
+          fi
+          # version builtin test
+          out="$(printf 'version\n' | "$BIN" 2>/dev/null || true)"
+          echo "$out"
+          echo "$out" | grep -q "SourceForge 2.0 Shell" || { echo "version test failed"; exit 1; }
+          # simple echo test
+          out2="$(printf 'echo hello\n' | "$BIN" 2>/dev/null || true)"
+          echo "$out2" | grep -qx "hello" || { echo "echo test failed"; exit 1; }
+          echo "sfsh smoke tests passed"
+
       - name: Sanity checks (overlay/os-pack layout)
+        shell: bash
         run: |
           set -e
           test -f overlay/etc/profile.d/10-sf20-main.sh
@@ -71,27 +104,25 @@ jobs:
           test -f overlay/usr/local/sf20/first-boot.sh
           test -f overlay/usr/local/bin/sourceforge-term
           test -f overlay/usr/local/bin/sourceforge.sh
+          test -f overlay/usr/local/bin/sfsh
+          test -f overlay/usr/local/bin/chipsh
           test -f overlay/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth
           test -f overlay/usr/share/plymouth/themes/sourceforge/sourceforge.script
           test -f overlay/usr/share/plymouth/themes/sourceforge/logo.png
           test -f os-pack/boot-side/sf20/sf20.repourl
           if [ -d overlay/boot ]; then echo "overlay/boot must not exist"; exit 1; fi
 
-      - name: Install build deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux
-
       - name: Pre-clean mount points (best effort)
         if: always()
+        shell: bash
         run: |
           sudo umount /mnt/imgboot 2>/dev/null || true
           sudo umount /mnt/imgroot 2>/dev/null || true
           sudo rm -rf /mnt/imgboot /mnt/imgroot
           sudo mkdir -p /mnt/imgroot /mnt/imgboot
-          sudo chown "$USER":"$USER" /mnt/imgroot /mnt/imgboot || true
 
       - name: Prepare workspace
+        shell: bash
         run: |
           set -euxo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
@@ -102,6 +133,7 @@ jobs:
           ls -lh
 
       - name: Map & mount image partitions
+        shell: bash
         run: |
           set -euxo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
@@ -114,22 +146,22 @@ jobs:
           sudo mount ${LOOP}p1 /mnt/imgboot
 
       - name: Apply overlay (root filesystem)
+        shell: bash
         run: |
           set -euxo pipefail
           sudo rsync -a overlay/ /mnt/imgroot/
-          sudo chmod +x /mnt/imgroot/usr/local/sf20/first-boot.sh || true
-          sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge-term || true
-          sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge.sh || true
 
       - name: Apply boot-side (repo URL etc.)
+        shell: bash
         run: |
           set -euxo pipefail
           sudo mkdir -p /mnt/imgboot/sf20
-          # FAT-safe rsync (don't preserve perms/owners/groups)
+          # FAT-safe rsync (no permissions/owners/groups on FAT)
           sudo rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
             os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
 
       - name: Enable services inside target image
+        shell: bash
         run: |
           set -euxo pipefail
           sudo systemctl --root=/mnt/imgroot enable sf20-firstboot.service
@@ -137,6 +169,7 @@ jobs:
 
       - name: Unmount & detach
         if: always()
+        shell: bash
         run: |
           set -euxo pipefail
           sync || true
@@ -146,6 +179,7 @@ jobs:
           sudo rm -rf /mnt/imgboot /mnt/imgroot || true
 
       - name: Recompress image (rename by board)
+        shell: bash
         run: |
           set -euxo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
@@ -157,7 +191,6 @@ jobs:
       - name: Upload artifact (.img.xz)
         uses: actions/upload-artifact@v4
         with:
-          # Use SHORTNAME only to avoid invalid characters
           name: sf20-${{ steps.base.outputs.shortname }}
           path: build/sf20-*.img.xz
           if-no-files-found: error
