@@ -1,0 +1,9 @@
+[Unit]
+Description=Disabled by SourceForge 2.0 (branding cleanup)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+
+[Install]
+WantedBy=multi-user.target
