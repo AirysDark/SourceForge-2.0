@@ -1,60 +1,162 @@
-name: Build DietPi Image (local base + LFS)
+name: Build 2 SourceForge 2.0 (DietPi)
 
 on:
   workflow_dispatch:
     inputs:
-      model:
-        description: 'Pi model (pi3/pi4 or pi5)'
-        required: true
-        default: 'pi4'
+      board:
+        description: "Target board"
         type: choice
-        options: [pi3, pi4, pi5]
+        required: true
+        default: rpi234
+        options:
+          - rpi234
+          - rpi5
   push:
-    tags:
-      - 'v*.*.*'
-
-permissions:
-  contents: write
+    branches: [ main ]
+    paths:
+      - 'overlay/**'
+      - 'os-pack/**'
+      - 'dietpi-base/**'
+      - '.github/workflows/build-dietpi.yml'
 
 jobs:
-  build-dietpi:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    env:
+      BOARD: ${{ inputs.board || 'rpi234' }}
+
     steps:
-      - name: Checkout with LFS
+      - name: Checkout (with Git LFS)
         uses: actions/checkout@v4
         with:
-          lfs: true   # pull Git LFS files automatically
+          lfs: true
 
-      - name: Verify DietPi base images
+      - name: Resolve base image by BOARD
+        id: base
         run: |
-          ls -lh dietpi-base || true
+          set -euo pipefail
+          case "${BOARD}" in
+            rpi234) BASENAME="DietPi_RPi234-ARMv8-Trixie" ;;
+            rpi5)   BASENAME="DietPi_RPi5-ARMv8-Trixie" ;;
+            *)      echo "Unknown BOARD: ${BOARD}" >&2; exit 1 ;;
+          esac
+          echo "basename=${BASENAME}" >> "$GITHUB_OUTPUT"
+          if [ ! -f "dietpi-base/${BASENAME}.img.xz" ]; then
+            echo "Missing: dietpi-base/${BASENAME}.img.xz" >&2
+            echo "Place the DietPi base image into dietpi-base/ (Git LFS) or add a download step." >&2
+            exit 1
+          fi
+
+      - name: Validate DietPi base is real (not LFS pointer)
+        run: |
+          set -euo pipefail
+          BASENAME="${{ steps.base.outputs.basename }}"
+          ls -lh "dietpi-base/${BASENAME}.img.xz"
+          file "dietpi-base/${BASENAME}.img.xz"
+          if ! xz -t "dietpi-base/${BASENAME}.img.xz" 2>/dev/null; then
+            echo "ERROR: ${BASENAME}.img.xz is not a valid xz (likely an LFS pointer not fetched)." >&2
+            exit 1
+          fi
+
+      - name: Sanity checks (overlay/os-pack layout)
+        run: |
+          set -e
+          test -f overlay/etc/profile.d/10-sf20-main.sh
+          test -f overlay/etc/systemd/system/sf20-firstboot.service
+          test -f overlay/etc/systemd/system/sf20-terminal-tty1.service
+          test -f overlay/usr/local/sf20/first-boot.sh
+          test -f overlay/usr/local/bin/sourceforge-term
+          test -f overlay/usr/local/bin/sourceforge.sh
+          test -f overlay/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth
+          test -f overlay/usr/share/plymouth/themes/sourceforge/sourceforge.script
+          test -f overlay/usr/share/plymouth/themes/sourceforge/logo.png
+          test -f os-pack/boot-side/sf20/sf20.repourl
+          if [ -d overlay/boot ]; then echo "overlay/boot must not exist"; exit 1; fi
 
       - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y xz-utils kpartx dosfstools parted unzip dos2unix
+          sudo apt-get install -y xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux
 
-      - name: Normalize build script
+      - name: Pre-clean mount points (best effort)
+        if: always()
         run: |
-          dos2unix scripts/build-dietpi-image.sh || true
-          chmod +x scripts/build-dietpi-image.sh
+          sudo umount /mnt/imgboot 2>/dev/null || true
+          sudo umount /mnt/imgroot 2>/dev/null || true
+          sudo rm -rf /mnt/imgboot /mnt/imgroot
+          sudo mkdir -p /mnt/imgroot /mnt/imgboot
+          sudo chown "$USER":"$USER" /mnt/imgroot /mnt/imgboot || true
 
-      - name: Build image
-        run: ./scripts/build-dietpi-image.sh "${{ inputs.model }}" dist
+      - name: Prepare workspace
+        run: |
+          set -euxo pipefail
+          BASENAME="${{ steps.base.outputs.basename }}"
+          mkdir -p build
+          cp "dietpi-base/${BASENAME}.img.xz" build/
+          cd build
+          unxz -T0 "${BASENAME}.img.xz"
+          ls -lh
 
-      - name: Checksums
-        run: (cd dist && sha256sum * > checksums.txt)
+      - name: Map & mount image partitions
+        run: |
+          set -euxo pipefail
+          BASENAME="${{ steps.base.outputs.basename }}"
+          IMG="build/${BASENAME}.img"
+          LOOP=$(sudo losetup -f --show -P "$IMG")
+          echo "LOOP=$LOOP" | tee $GITHUB_ENV
+          sudo partprobe "$LOOP" || true
+          sudo fdisk -l "$LOOP" || true
+          sudo mount ${LOOP}p2 /mnt/imgroot
+          sudo mount ${LOOP}p1 /mnt/imgboot
+          ls -la /mnt/imgboot || true
+          ls -la /mnt/imgroot || true
 
-      - name: Upload artifacts
+      - name: Apply overlay (root filesystem)
+        run: |
+          set -euxo pipefail
+          sudo rsync -a overlay/ /mnt/imgroot/
+          sudo chmod +x /mnt/imgroot/usr/local/sf20/first-boot.sh || true
+          sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge-term || true
+          sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge.sh || true
+
+      - name: Apply boot-side (repo URL etc.)
+        run: |
+          set -euxo pipefail
+          sudo mkdir -p /mnt/imgboot/sf20
+          # FAT-safe rsync (don?t preserve perms/owners/groups)
+          sudo rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
+            os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
+
+      - name: Enable services inside target image
+        run: |
+          set -euxo pipefail
+          sudo systemctl --root=/mnt/imgroot enable sf20-firstboot.service
+          sudo systemctl --root=/mnt/imgroot enable sf20-terminal-tty1.service
+          sudo chroot /mnt/imgroot /bin/bash -lc 'systemctl is-enabled sf20-firstboot.service || true'
+          sudo chroot /mnt/imgroot /bin/bash -lc 'systemctl is-enabled sf20-terminal-tty1.service || true'
+
+      - name: Unmount & detach
+        if: always()
+        run: |
+          set -euxo pipefail
+          sync || true
+          sudo umount /mnt/imgboot || true
+          sudo umount /mnt/imgroot || true
+          if [ -n "${LOOP:-}" ]; then sudo losetup -d "$LOOP" || true; fi
+          sudo rm -rf /mnt/imgboot /mnt/imgroot || true
+
+      - name: Recompress image
+        run: |
+          set -euxo pipefail
+          BASENAME="${{ steps.base.outputs.basename }}"
+          xz -9v "build/${BASENAME}.img"
+          ls -lh build
+
+      - name: Upload artifact (.img.xz)
         uses: actions/upload-artifact@v4
         with:
-          name: sf20-dietpi-image
-          path: dist/*
-
-      - name: Publish GitHub Release (on tag)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: sf20-${{ env.BOARD }}-img-${{ github.sha }}
+          path: build/*.img.xz
+          if-no-files-found: error
