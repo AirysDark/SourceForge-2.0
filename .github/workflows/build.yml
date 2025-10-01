@@ -1,246 +1,102 @@
-name: Build SourceForge 2.0 (DietPi)
-
-on:
-  workflow_dispatch:
-    inputs:
-      board:
-        description: "Target board"
-        type: choice
-        required: true
-        default: rpi234
-        options:
-          - rpi234         # Raspberry Pi 2/3/4
-          - rpi5           # Raspberry Pi 5
-  push:
-    branches: [ main ]
-    paths:
-      - 'overlay/**'
-      - 'os-pack/**'
-      - 'shell/**'
-      - 'dietpi-base/**'
-      - '.github/workflows/build-image.yml'
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-
-    env:
-      BOARD: ${{ inputs.board || 'rpi234' }}
-
-    steps:
-      - name: Checkout (with Git LFS)
-        uses: actions/checkout@v4
-        with:
-          lfs: true
-
-      - name: Resolve board ? base image + labels
-        id: base
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "${BOARD}" in
-            rpi234) BASENAME="DietPi_RPi234-ARMv8-Trixie";  BOARD_LABEL="Raspberry Pi 2-3-4";;
-            rpi5)   BASENAME="DietPi_RPi5-ARMv8-Trixie";    BOARD_LABEL="Raspberry Pi 5";;
-            *) echo "Unknown BOARD: ${BOARD}" >&2; exit 1;;
-          esac
-          echo "basename=${BASENAME}"     >> "$GITHUB_OUTPUT"
-          echo "board_short=${BOARD}"     >> "$GITHUB_OUTPUT"
-          echo "board_label=${BOARD_LABEL}" >> "$GITHUB_OUTPUT"
-
-          if [ ! -f "dietpi-base/${BASENAME}.img.xz" ]; then
-            echo "Missing: dietpi-base/${BASENAME}.img.xz" >&2
-            echo "Put the DietPi base image in dietpi-base/ (use Git LFS) or add a download step." >&2
-            exit 1
-          fi
-
-      - name: Validate DietPi base is real (not LFS pointer)
-        shell: bash
-        run: |
-          set -euo pipefail
-          BASENAME="${{ steps.base.outputs.basename }}"
-          ls -lh "dietpi-base/${BASENAME}.img.xz"
-          file   "dietpi-base/${BASENAME}.img.xz"
-          xz -t  "dietpi-base/${BASENAME}.img.xz"
-
-      - name: Install build deps
-        shell: bash
+- name: Install host tools for SF20 injection
         run: |
           sudo apt-get update
-          sudo apt-get install -y xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux build-essential file
+          sudo apt-get install -y rsync unzip xz-utils kpartx parted e2fsprogs dosfstools util-linux build-essential file
 
-      # --- OPTIONAL: Build sfsh from source and install into overlay ---
-      - name: Build sfsh & install into overlay (with quick tests)
-        working-directory: shell
-        shell: bash
+      - name: Build sfsh and stage into overlay
+        working-directory: sf20/shell
         run: |
           set -euo pipefail
           make clean
-          make install   # expected to place sfsh + chipsh into ../overlay/usr/local/bin/
+          make
+          make install   # installs to ../overlay/usr/local/bin/sfsh
+          test -x ../overlay/usr/local/bin/sfsh
 
-          BIN="../overlay/usr/local/bin/sfsh"
-          test -x "$BIN" || { echo "sfsh not found/executable at $BIN"; exit 1; }
-
-          # basic smoke: version/echo ? tolerate banners by extracting final line
-          out="$(printf 'version\nexit\n' | "$BIN" 2>/dev/null || true)"
-          echo "$out" | grep -qi "SourceForge 2.0 Shell" || { echo "version test failed"; echo "$out"; exit 1; }
-
-          out2="$(printf 'echo hello\nexit\n' | "$BIN" 2>/dev/null || true)"
-          # take the last non-empty line and compare
-          last="$(echo "$out2" | sed '/^$/d' | tail -n1)"
-          [ "$last" = "hello" ] || { echo "echo test failed"; echo "$out2"; exit 1; }
-
-          echo "sfsh smoke tests passed"
-
-      - name: Sanity checks (overlay/os-pack layout)
-        shell: bash
-        run: |
-          set -e
-          for f in \
-            overlay/etc/profile.d/10-sf20-main.sh \
-            overlay/usr/local/bin/sourceforge-term \
-            overlay/usr/local/bin/sfsh \
-            overlay/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth \
-            overlay/usr/share/plymouth/themes/sourceforge/sourceforge.script \
-            overlay/usr/share/plymouth/themes/sourceforge/logo.png \
-            os-pack/boot-side/sf20/sf20.repourl
-          do
-            [ -f "$f" ] || { echo "MISSING $f"; exit 1; }
-          done
-          # these two will be created later if absent; don't hard fail here:
-          true
-
-      - name: Pre-clean mount points (best effort)
-        if: always()
-        shell: bash
-        run: |
-          sudo umount /mnt/imgboot 2>/dev/null || true
-          sudo umount /mnt/imgroot 2>/dev/null || true
-          sudo rm -rf /mnt/imgboot /mnt/imgroot
-          sudo mkdir -p /mnt/imgroot /mnt/imgboot
-          sudo chown "$USER":"$USER" /mnt/imgroot /mnt/imgboot || true
-
-      - name: Prepare workspace (copy & unxz)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          BASENAME="${{ steps.base.outputs.basename }}"
-          mkdir -p build
-          cp "dietpi-base/${BASENAME}.img.xz" build/
-          cd build
-          unxz -T0 "${BASENAME}.img.xz"
-          ls -lh
-
-      - name: Map & mount image partitions
-        id: mount
-        shell: bash
-        run: |
-          set -euxo pipefail
-          BASENAME="${{ steps.base.outputs.basename }}"
-          IMG="$GITHUB_WORKSPACE/build/${BASENAME}.img"
-          LOOP=$(sudo losetup -f --show -P "$IMG")
-          echo "LOOP=$LOOP" | tee -a "$GITHUB_ENV"
-          sudo partprobe "$LOOP" || true
-          sudo fdisk -l "$LOOP" || true
-          # p1 = boot (FAT), p2 = rootfs (ext4)
-          sudo mount ${LOOP}p2 /mnt/imgroot
-          sudo mount ${LOOP}p1 /mnt/imgboot
-
-      - name: Apply overlay (root filesystem)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sudo rsync -a overlay/ /mnt/imgroot/
-          sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge-term || true
-          sudo chmod +x /mnt/imgroot/usr/local/bin/sfsh || true
-
-      - name: Apply boot-side (repo URL etc.)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sudo mkdir -p /mnt/imgboot/sf20
-          # FAT-safe rsync
-          sudo rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
-            os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
-
-      # --- HARDEN: force tty1 to run SF20 terminal even if overlay missed it ---
-      - name: Ensure/patch tty1 override to SourceForge terminal
-        shell: bash
-        run: |
-          set -euxo pipefail
-          ROOT=/mnt/imgroot
-          sudo mkdir -p "$ROOT/etc/systemd/system/getty@tty1.service.d"
-          sudo tee "$ROOT/etc/systemd/system/getty@tty1.service.d/override.conf" >/dev/null <<'EOF'
-          [Service]
-          ExecStart=
-          ExecStart=-/usr/local/bin/sourceforge-term
-          EOF
-          # Make sure launcher exists & executable
-          if [ ! -x "$ROOT/usr/local/bin/sourceforge-term" ]; then
-            sudo tee "$ROOT/usr/local/bin/sourceforge-term" >/dev/null <<'EOS'
-            #!/usr/bin/env bash
-            set -euo pipefail
-            [ -t 0 ] || exec setsid -w /usr/local/bin/sourceforge-term
-            command -v tput >/dev/null 2>&1 && tput reset || clear
-            stty sane 2>/dev/null || true
-            exec /usr/local/bin/sfsh -l
-            EOS
-            sudo chmod +x "$ROOT/usr/local/bin/sourceforge-term"
-          fi
-
-      - name: Verify SF20 tty1 takeover (smoke test)
-        shell: bash
+      - name: Locate image (raw or zipped)
+        id: findimg
         run: |
           set -euo pipefail
-          ROOT=/mnt/imgroot
+          shopt -s nullglob
+          # Prefer any .zip with one .img inside; else take .img
+          ZIPS=( **/*.zip **/*.ZIP )
+          IMGS=( **/*.img **/*.IMG )
+          pick=""
 
-          echo "[check] getty@tty1 drop-in override present"
-          test -f "$ROOT/etc/systemd/system/getty@tty1.service.d/override.conf" \
-            || { echo "MISSING: override.conf"; exit 1; }
+          if [ ${#ZIPS[@]} -gt 0 ]; then
+            # Pick newest zip
+            pick="$(ls -1t "${ZIPS[@]}" | head -n1)"
+            echo "zip=${pick}" >> "$GITHUB_OUTPUT"
+            echo "Found zip: $pick"
+          elif [ ${#IMGS[@]} -gt 0 ]; then
+            pick="$(ls -1t "${IMGS[@]}" | head -n1)"
+            echo "img=${pick}" >> "$GITHUB_OUTPUT"
+            echo "Found img: $pick"
+          else
+            echo "No .img or .zip image found in workspace." >&2
+            exit 1
+          fi
 
-          echo "[check] override points to sourceforge-term"
-          grep -q '/usr/local/bin/sourceforge-term' \
-            "$ROOT/etc/systemd/system/getty@tty1.service.d/override.conf" \
-            || { echo "BAD: override ExecStart not set to sourceforge-term"; exit 1; }
-
-          echo "[check] launcher is executable"
-          test -x "$ROOT/usr/local/bin/sourceforge-term" \
-            || { echo "MISSING or not executable: /usr/local/bin/sourceforge-term"; exit 1; }
-
-          echo "[check] sfsh binary exists and executable"
-          test -x "$ROOT/usr/local/bin/sfsh" \
-            || { echo "MISSING or not executable: /usr/local/bin/sfsh"; exit 1; }
-
-          echo "[check] profile hook for banner/menu"
-          test -f "$ROOT/etc/profile.d/10-sf20-main.sh" \
-            || { echo "MISSING: /etc/profile.d/10-sf20-main.sh"; exit 1; }
-
-          echo "[ok] SF20 tty1 takeover checks passed"
-
-      - name: Unmount & detach
-        if: always()
-        shell: bash
+      - name: Extract .img from .zip if needed
+        if: ${{ steps.findimg.outputs.zip != '' }}
+        id: unzipimg
         run: |
-          set -euxo pipefail
-          sync || true
-          sudo umount /mnt/imgboot || true
-          sudo umount /mnt/imgroot || true
-          if [ -n "${LOOP:-}" ]; then sudo losetup -d "$LOOP" || true; fi
-          sudo rm -rf /mnt/imgboot /mnt/imgroot || true
+          set -euo pipefail
+          mkdir -p image_work
+          unzip -o "${{ steps.findimg.outputs.zip }}" -d image_work
+          IMG=$(ls -1 image_work/*.img | head -n1)
+          [ -n "$IMG" ] || { echo "No .img found inside zip"; exit 1; }
+          echo "img=$IMG" >> "$GITHUB_OUTPUT"
+          ls -lh "$IMG"
 
-      - name: Recompress image (rename by board)
-        shell: bash
+      - name: Mount, inject SF20, unmount
+        env:
+          IMG_PATH: ${{ steps.unzipimg.outputs.img || steps.findimg.outputs.img }}
         run: |
-          set -euxo pipefail
-          BASENAME="${{ steps.base.outputs.basename }}"
-          SHORT="${{ steps.base.outputs.board_short }}"
-          xz -9eT0 "build/${BASENAME}.img"
-          mv "build/${BASENAME}.img.xz" "build/sf20-${SHORT}.img.xz"
-          ls -lh build
+          set -euo pipefail
+          IMG="${IMG_PATH}"
+          [ -f "$IMG" ] || { echo "IMG not found: $IMG"; exit 1; }
 
-      - name: Upload artifact (.img.xz)
+          echo "Using image: $IMG"
+
+          # Setup loop + partitions
+          LOOP=$(sudo losetup -f --show -P "$IMG")
+          echo "LOOP=$LOOP"
+
+          # Identify boot/root partitions (Raspberry Pi OS layout: p1=boot, p2=root)
+          BOOT="${LOOP}p1"
+          ROOT="${LOOP}p2"
+          sudo partprobe "$LOOP" || true
+
+          mkdir -p /mnt/sf20root /mnt/sf20boot
+          sudo mount "$ROOT" /mnt/sf20root
+          sudo mount "$BOOT" /mnt/sf20boot
+
+          # Apply SF20 overlay & boot-side (tty1 override included)
+          sudo sf20/scripts/sf20-apply-to-rootfs.sh /mnt/sf20root /mnt/sf20boot
+
+          # Ensure fs is clean
+          sync
+          sudo umount /mnt/sf20boot || true
+          sudo umount /mnt/sf20root || true
+          sudo losetup -d "$LOOP" || true
+
+      - name: Repack and upload artifact
+        env:
+          IMG_RAW: ${{ steps.unzipimg.outputs.img || steps.findimg.outputs.img }}
+          BOARD_LABEL: ${{ inputs.board || 'rpi234' }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          base="sf20-${BOARD_LABEL}"
+          zipfile="out/${base}.zip"
+
+          # Always zip the raw image we modified
+          ( cd "$(dirname "$IMG_RAW")" && zip -9 "${GITHUB_WORKSPACE}/${zipfile}" "$(basename "$IMG_RAW")" )
+          ls -lh out
+
+      - name: Upload SF20 image artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sf20-${{ steps.base.outputs.board_short }}
-          path: build/sf20-*.img.xz
+          name: sf20-${{ inputs.board || 'rpi234' }}
+          path: out/*.zip
           if-no-files-found: error
