@@ -14,11 +14,11 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'overlay/**'
-      - 'os-pack/**'
-      - 'dietpi-base/**'
-      - 'shell/**'
-      - '.github/workflows/build-dietpi.yml'
+      - "overlay/**"
+      - "os-pack/**"
+      - "dietpi-base/**"
+      - "shell/**"
+      - ".github/workflows/build-image.yml"
 
 jobs:
   build:
@@ -34,8 +34,9 @@ jobs:
         with:
           lfs: true
 
-      - name: Resolve base image (label ? key)
+      - name: Resolve base image (label -> key)
         id: base
+        shell: bash
         run: |
           set -euo pipefail
           case "${BOARD_LABEL}" in
@@ -48,63 +49,53 @@ jobs:
           echo "basename=${BASENAME}"   >> "$GITHUB_OUTPUT"
           if [ ! -f "dietpi-base/${BASENAME}.img.xz" ]; then
             echo "Missing: dietpi-base/${BASENAME}.img.xz" >&2
-            echo "Place the DietPi base image into dietpi-base/ (Git LFS) or add a download step." >&2
             exit 1
           fi
 
       - name: Validate DietPi base is real (not LFS pointer)
+        shell: bash
         run: |
           set -euo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
           ls -lh "dietpi-base/${BASENAME}.img.xz"
           file "dietpi-base/${BASENAME}.img.xz"
           if ! xz -t "dietpi-base/${BASENAME}.img.xz" 2>/dev/null; then
-            echo "ERROR: ${BASENAME}.img.xz is not a valid xz (likely an LFS pointer not fetched)." >&2
+            echo "ERROR: ${BASENAME}.img.xz is not a valid xz" >&2
             exit 1
           fi
 
       - name: Install build deps
+        shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux build-essential
+          sudo apt-get install -y \
+            xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux \
+            build-essential
 
+      # Build sfsh and run an inline smoke test (no extra files, no heredoc)
       - name: Build and test SourceForge 2.0 Shell
         working-directory: shell
+        shell: bash
         run: |
-          set -euxo pipefail
-          # Ensure test script exists (create if missing)
-          if [ ! -f test_sfsh.sh ]; then
-            cat > test_sfsh.sh <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-BIN="../overlay/usr/local/bin/sfsh"
-[[ -x "$BIN" ]] || { echo "sfsh not found at $BIN"; exit 1; }
-echo "? sfsh binary exists"
-out="$(printf "version\n" | "$BIN" 2>/dev/null || true)"
-if grep -q "SourceForge 2.0 Shell" <<<"$out"; then
-  echo "? version builtin OK"
-else
-  echo "? version builtin failed"
-  echo "$out"
-  exit 1
-fi
-out="$(printf "echo hello\n" | "$BIN" 2>/dev/null || true)"
-if grep -q "^hello$" <<<"$out"; then
-  echo "? echo OK"
-else
-  echo "? echo failed"
-  echo "$out"
-  exit 1
-fi
-echo "All sfsh tests passed ?"
-EOF
-            chmod +x test_sfsh.sh
-          fi
+          set -euo pipefail
           make clean
           make install
-          make test
+          BIN="../overlay/usr/local/bin/sfsh"
+          if [ ! -x "$BIN" ]; then
+            echo "sfsh binary not found at $BIN" >&2
+            exit 1
+          fi
+          # version builtin test
+          out="$(printf 'version\n' | "$BIN" 2>/dev/null || true)"
+          echo "$out"
+          echo "$out" | grep -q "SourceForge 2.0 Shell" || { echo "version test failed"; exit 1; }
+          # simple echo test
+          out2="$(printf 'echo hello\n' | "$BIN" 2>/dev/null || true)"
+          echo "$out2" | grep -qx "hello" || { echo "echo test failed"; exit 1; }
+          echo "sfsh smoke tests passed"
 
       - name: Sanity checks (overlay/os-pack layout)
+        shell: bash
         run: |
           set -e
           test -f overlay/etc/profile.d/10-sf20-main.sh
@@ -123,14 +114,15 @@ EOF
 
       - name: Pre-clean mount points (best effort)
         if: always()
+        shell: bash
         run: |
           sudo umount /mnt/imgboot 2>/dev/null || true
           sudo umount /mnt/imgroot 2>/dev/null || true
           sudo rm -rf /mnt/imgboot /mnt/imgroot
           sudo mkdir -p /mnt/imgroot /mnt/imgboot
-          sudo chown "$USER":"$USER" /mnt/imgroot /mnt/imgboot || true
 
       - name: Prepare workspace
+        shell: bash
         run: |
           set -euxo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
@@ -141,6 +133,7 @@ EOF
           ls -lh
 
       - name: Map & mount image partitions
+        shell: bash
         run: |
           set -euxo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
@@ -153,18 +146,22 @@ EOF
           sudo mount ${LOOP}p1 /mnt/imgboot
 
       - name: Apply overlay (root filesystem)
+        shell: bash
         run: |
           set -euxo pipefail
           sudo rsync -a overlay/ /mnt/imgroot/
 
       - name: Apply boot-side (repo URL etc.)
+        shell: bash
         run: |
           set -euxo pipefail
           sudo mkdir -p /mnt/imgboot/sf20
+          # FAT-safe rsync (no permissions/owners/groups on FAT)
           sudo rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
             os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
 
       - name: Enable services inside target image
+        shell: bash
         run: |
           set -euxo pipefail
           sudo systemctl --root=/mnt/imgroot enable sf20-firstboot.service
@@ -172,6 +169,7 @@ EOF
 
       - name: Unmount & detach
         if: always()
+        shell: bash
         run: |
           set -euxo pipefail
           sync || true
@@ -181,6 +179,7 @@ EOF
           sudo rm -rf /mnt/imgboot /mnt/imgroot || true
 
       - name: Recompress image (rename by board)
+        shell: bash
         run: |
           set -euxo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
