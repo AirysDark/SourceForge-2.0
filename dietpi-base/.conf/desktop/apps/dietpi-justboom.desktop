@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=DietPi-JustBoom
+Type=Application
+Comment=Tweak your sound card, MPD and CAVA settings
+Terminal=true
+Exec=/boot/dietpi/misc/dietpi-justboom
+Icon=/var/lib/dietpi/dietpi-software/installed/desktop/icons/justboom.png
+Categories=ConsoleOnly;System;AudioVideo;
+GenericName=DietPi-JustBoom

@@ -1,0 +1,14 @@
+[Unit]
+Description=DietPi-FS_partition_resize
+DefaultDependencies=no
+After=systemd-fsck-root.service systemd-tmpfiles-setup-dev-early.service systemd-sysctl.service systemd-udev-trigger.service
+Wants=local-fs-pre.target
+Before=local-fs-pre.target systemd-remount-fs.service
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+ExecStart=/var/lib/dietpi/services/fs_partition_resize.sh
+
+[Install]
+WantedBy=local-fs.target

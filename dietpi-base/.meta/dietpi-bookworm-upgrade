@@ -1,0 +1,190 @@
+#!/bin/bash
+{
+# Import DietPi-Globals ---------------------------------------------------------------
+. /boot/dietpi/func/dietpi-globals
+readonly G_PROGRAM_NAME='dietpi-bookworm-upgrade'
+[[ $G_DISTRO == [67] ]] || { G_DIETPI-NOTIFY 1 'You must run a Debian Bullseye system to run this script!'; exit 1; }
+G_CHECK_ROOT_USER "$@"
+G_CHECK_ROOTFS_RW
+G_INIT
+# Import DietPi-Globals ---------------------------------------------------------------
+
+# Warn about potential issues with legacy kernel, especially the missing builtin WiFi country code feature
+dpkg --compare-versions "$(uname -r)" ge-nl 4.15 || G_WHIP_BUTTON_OK_TEXT='Continue' G_WHIP_BUTTON_CANCEL_TEXT='Exit' G_WHIP_YESNO "[WARNING] You kernel version $(uname -r) is too old to be fully supported on Debian Bookworm
+\nA known issue is that this kernel is not able to lookup allowed WiFi frequencies based on a given county code without the help of the Central Regulatory Domain Agent (CRDA). But the crda package is not available anymore on Bookworm and the wireless-regdb package on Bookworm does not provide the regulatory database in a format CRDA understands.
+This means that your WiFi adapter will only be able to use the very limited set of \"global\" (00) frequencies, or not connect to your access point at all.
+\nOther issues may involve certain software to not start, when making use of a modern kernel feature. This often applies to container engines like Docker and Kubernetes.
+\nWe generally recommend to stay on Bullseye with this system, unless you can upgrade the kernel. Do you want to continue regardless?\n" || exit 0
+
+# Warn about incompatible installed software titles
+alist=()
+while read -r id
+do
+	case $id in
+		47) alist+=('ownCloud');;
+		48) alist+=('Pydio');;
+		59) alist+=('RPi Cam Web Interface');;
+		167) (( $G_HW_ARCH == 1 )) && alist+=('Raspotify');;
+		*) :;;
+	esac
+done < <(sed -nE 's/^aSOFTWARE_INSTALL_STATE\[([0-9]+)\]=2$/\1/p' /boot/dietpi/.installed)
+(( ! ${#alist[@]} )) || G_WHIP_BUTTON_OK_TEXT='Continue' G_WHIP_BUTTON_CANCEL_TEXT='Exit' G_WHIP_YESNO "[WARNING] Incompatible software titles found
+\nThe following installed software titles are not yet compatible with Debian Bookworm on your system:
+${alist[*]}
+\nDo you want to continue regardless?\n" || exit 0
+
+# Offer a backup before doing any changes to the system
+G_PROMPT_BACKUP
+
+G_DIETPI-NOTIFY 2 'Upgrading APT packages to latest versions provided by Debian Bullseye'
+/boot/dietpi/dietpi-services stop
+G_AGUP
+G_AGDUG
+G_AGA
+
+G_CHECK_KERNEL || { G_WHIP_YESNO '[ INFO ] Reboot required
+\nYour system needs to be rebootet to apply a recent kernel upgrade. Please do this first and then rerun this script to proceed with the Bookworm upgrade.
+\nShall we reboot your system now?' && reboot; exit 0; }
+
+G_DIETPI-NOTIFY 2 'Updating DietPi to latest version'
+/boot/dietpi/dietpi-update 1
+
+mapfile -t apackages < <(apt-mark showhold)
+[[ ${apackages[0]} ]] && G_EXEC_DESC='Unholding all packages' G_EXEC apt-mark unhold "${apackages[@]}"
+unset -v apackages
+
+G_DIETPI-NOTIFY 2 'Migrating package lists to Bookworm suite'
+G_EXEC sed --follow-symlinks -i 's/bullseye/bookworm/g' /etc/apt/sources.list
+(( $G_RASPBIAN )) || G_EXEC sed --follow-symlinks -i -e 's/ non-free$/ non-free non-free-firmware/' -e 's/archive.debian.org/deb.debian.org/' /etc/apt/sources.list
+# Remove obsolete WSDD repo
+[[ -f '/etc/apt/sources.list.d/dietpi-wsdd.list' ]] && G_EXEC rm /etc/apt/sources.list.d/dietpi-wsdd.list
+[[ -f '/etc/apt/trusted.gpg.d/dietpi-wsdd.gpg' ]] && G_EXEC rm /etc/apt/trusted.gpg.d/dietpi-wsdd.gpg
+for i in /etc/apt/sources.list.d/*.list
+do
+	[[ $i == '/etc/apt/sources.list.d/*.list' ]] && break
+	G_EXEC sed --follow-symlinks -i 's/bullseye/bookworm/g' "$i"
+	G_EXEC sed --follow-symlinks -i '/download\.opensuse\.org/s/Debian_11/Debian_12/' "$i"
+	G_EXEC sed --follow-symlinks -i '/download\.opensuse\.org/s/Raspbian_11/Raspbian_12/' "$i"
+done
+
+G_DIETPI-NOTIFY 2 'Reverting some package lists to Bullseye which have no Bookworm suite (yet)'
+[[ -f '/etc/apt/sources.list.d/radxa.list' ]] && G_EXEC sed --follow-symlinks -i 's/bookworm/bullseye/g' /etc/apt/sources.list.d/radxa.list
+[[ -f '/etc/apt/sources.list.d/dietpi-radxa.list' ]] && G_EXEC sed --follow-symlinks -i 's/bookworm/bullseye/g' /etc/apt/sources.list.d/dietpi-radxa.list
+
+if dpkg-query -s 'postgresql' &> /dev/null
+then
+	G_DIETPI-NOTIFY 2 'Preventing automatic v15 main cluster generation'
+	G_CONFIG_INJECT 'create_main_cluster[[:blank:]]' 'create_main_cluster = false' /etc/postgresql-common/createcluster.conf
+fi
+
+G_DIETPI-NOTIFY 2 'Applying the actual upgrade to Debian Bookworm'
+/boot/dietpi/dietpi-services stop
+G_AGUP
+G_AGDUG
+
+/boot/dietpi/func/dietpi-obtain_hw_model
+. /boot/dietpi/.hw_model
+
+G_DIETPI-NOTIFY 0 'Congratulations, you are now on Bookworm:'
+head -4 /etc/os-release
+echo
+read -rp 'Next, some migrations are done for all software to run nicely on Bookworm. This can include dietpi-software reinstalls. Press ENTER to continue or CTRL+C to abort ...'
+
+G_DIETPI-NOTIFY 2 'Running post upgrade migrations'
+/boot/dietpi/dietpi-services stop
+
+# Switch from RSA to shorter and modern Ed25519 ssh.dietpi.com host key
+G_CONFIG_INJECT '\[?ssh.dietpi.com(]:29248)?[[:blank:]]' '[ssh.dietpi.com]:29248 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdEPlagpQ+RVHNOX3jkG1Bya7Oza1dAke8h8NszVW84' /root/.ssh/known_hosts
+
+# We do not want G_AGP to purge the old kernel package on x86_64!
+eval "$(declare -f G_AGP | sed 's/autopurge/purge/')"
+
+if (( $G_HW_MODEL < 10 )) && apt-mark showmanual | grep -q '^firmware-misc-nonfree$'
+then
+	G_DIETPI-NOTIFY 2 'Installing new dedicated Mediatek WiFi firmware package'
+	G_AGI firmware-mediatek
+fi
+
+# Migrate from CRDA to builtin kernel WiFi country code feature. CRDA is not available and does not work on Bookworm anymore. For non-Debian kernels, it is required to switch to the upstream regulatory database.
+if dpkg-query -s wireless-regdb &> /dev/null
+then
+	G_EXEC update-alternatives --set regulatory.db /lib/firmware/regulatory.db-upstream
+	G_EXEC apt-mark manual wireless-regdb
+	G_AGP crda
+fi
+
+# Migrate OpenSSH server setting: https://manpages.debian.org/bookworm/sshd_config#KbdInteractiveAuthentication~2
+[[ -f '/etc/ssh/sshd_config' ]] && grep -q '^[[:blank:]]*ChallengeResponseAuthentication[[:blank:]]' /etc/ssh/sshd_config && ! grep -q '^[[:blank:]]*KbdInteractiveAuthentication[[:blank:]]' /etc/ssh/sshd_config && G_EXEC sed --follow-symlinks -Ei 's/^([[:blank:]]*)ChallengeResponseAuthentication([[:blank:]])/\1KbdInteractiveAuthentication\2/' /etc/ssh/sshd_config
+
+# Remove deprecated OpenVPN setting: https://manpages.debian.org/bullseye/openvpn#keysize
+for i in /etc/openvpn/*.{conf,ovpn}
+do
+	[[ -f $i ]] && grep -q '^[[:blank:]]*keysize[[:blank:]]' && G_EXEC sed --follow-symlinks -i '/^[[:blank:]]*keysize[[:blank:]]/d' "$i"
+done
+
+# Purge obsolete GCC versions
+G_AGP gcc-{8,9,10,11}-base
+
+# Purge PHP 7.4 packages, obsolete after PHP 8.2 install
+G_AGP '*php7.4*'
+
+# Remove obsolete PHP 7.4 configs and Python 3.9 modules, obsolete after Python 3.11 install
+G_EXEC rm -Rf /etc/php/7.4 /usr/local/lib/python3.9 /usr/local/bin/pip3*
+
+# Install (mark as manually installed) root trust anchors for Unbound, which was degraded from dependency to recommendation: https://github.com/MichaIng/DietPi/issues/5612
+dpkg-query -s unbound &> /dev/null && G_AGI dns-root-data
+
+# Allow IPv6 port binding failure explicitly, not implicit anymore since Bookworm: https://github.com/MichaIng/DietPi/pull/6103#issuecomment-1407749720
+[[ -f '/etc/redis/redis.conf' ]] && G_EXEC sed --follow-symlinks -i '/^bind 127.0.0.1 ::1$/c\bind 127.0.0.1 -::1' /etc/redis/redis.conf
+
+if apt-mark showmanual | grep -q 'libicu67'
+then
+	G_DIETPI-NOTIFY 2 'Migrating from libicu67 to libicu72'
+	G_AGI libicu72
+	G_EXEC apt-mark auto libicu67
+fi
+
+# PostgreSQL migration
+if dpkg-query -s 'postgresql' &> /dev/null
+then
+	G_DIETPI-NOTIFY 2 'Migrating PostgreSQL 13 clusters to v15'
+	mapfile -t clusters < <(pg_lsclusters | mawk '$1 == "13" {print $2}')
+	skipped=0
+	G_EXEC systemctl start postgresql
+	for cluster in "${clusters[@]}"
+	do
+		[[ -d /var/lib/postgresql/15/$cluster ]] && { G_DIETPI-NOTIFY 2 "PostgreSQL 15 cluster \"$cluster\" exists already, skipping migration"; skipped=1; continue; }
+		G_DIETPI-NOTIFY 2 "Found PostgreSQL 13 cluster \"$cluster\", starting migration ...";
+		G_EXEC pg_upgradecluster 13 "$cluster"
+		G_EXEC pg_dropcluster 13 "$cluster"
+	done
+	if (( $skipped ))
+	then
+		G_WHIP_MSG '[ INFO ] PostgreSQL 13 to v15 migration incomplete
+\nFor some PostgreSQL 13 cluster(s), the respective v15 cluster existed already, and the migration has hence been skipped.
+\nPlease review those left clusters and in case remove or migrate them to v15 manually. PostgreSQL 13 is kept installed for that. Once all needed clusters have been migrated, purge PostgreSQL 13 with the following commands:
+\nsudo rm /etc/apt/apt.conf.d/02autoremove-postgresql
+sudo apt autopurge'
+	else
+		G_EXEC rm /etc/apt/apt.conf.d/02autoremove-postgresql
+	fi
+fi
+
+# Reinstall all PHP applications which require non-standard PHP modules, Python applications installed via pip, Home Assistant to get latest version, ...
+G_PROMPT_BACKUP_DISABLED=1 /boot/dietpi/dietpi-software reinstall 38 40 89 114 118 125 130 136 139 141 143 153 155 157 180 210
+
+G_DIETPI-NOTIFY 2 'Purging left config files from packages which were removed before already'
+mapfile -t packages < <(dpkg -l | mawk '$1=="rc"{print $2}')
+G_AGP "${packages[@]}"
+
+cat << '_EOF_' > /etc/bashrc.d/zz-dietpi-autopurge.bash
+{
+(( $UID )) && return 0
+G_DIETPI-NOTIFY 2 'Autoremoving leftover packages from Bookworm upgrade...'
+G_EXEC_NOHALT=1 G_EXEC rm /etc/bashrc.d/zz-dietpi-autopurge.bash
+G_AGA
+}
+_EOF_
+
+G_WHIP_YESNO 'All finished!\n\nWe highly recommend to reboot, shall we reboot now?\n\nNB: To have obsolete leftover packages autoremoved, login as root user once after reboot, or run "sudo apt autopurge".' && reboot
+}
