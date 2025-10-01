@@ -1,0 +1,16 @@
+[Unit]
+Description=SourceForge 2.0 Terminal on tty1
+After=systemd-user-sessions.service plymouth-quit-wait.service
+
+[Service]
+ExecStart=-/usr/local/bin/sourceforge-term /usr/local/bin/sfsh
+Restart=always
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
