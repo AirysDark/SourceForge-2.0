@@ -1,4 +1,4 @@
-name: Build SourceForge image 2.0 (DietPi)
+name: Build SourceForge Image 2.0 (DietPi)
 
 on:
   workflow_dispatch:
@@ -33,11 +33,10 @@ jobs:
         with:
           lfs: true
 
-      - name: Resolve base image by BOARD label ? key
+      - name: Resolve base image (label ? key)
         id: base
         run: |
           set -euo pipefail
-          BOARD_LABEL="${BOARD_LABEL}"
           case "${BOARD_LABEL}" in
             "Raspberry Pi 2/3/4") BOARD_KEY="rpi234"; BASENAME="DietPi_RPi234-ARMv8-Trixie" ;;
             "Raspberry Pi 5")     BOARD_KEY="rpi5";   BASENAME="DietPi_RPi5-ARMv8-Trixie" ;;
@@ -113,8 +112,6 @@ jobs:
           sudo fdisk -l "$LOOP" || true
           sudo mount ${LOOP}p2 /mnt/imgroot
           sudo mount ${LOOP}p1 /mnt/imgboot
-          ls -la /mnt/imgboot || true
-          ls -la /mnt/imgroot || true
 
       - name: Apply overlay (root filesystem)
         run: |
@@ -136,7 +133,6 @@ jobs:
         run: |
           set -euxo pipefail
           sudo systemctl --root=/mnt/imgroot enable sf20-firstboot.service
-          # Verify enablement (no chroot needed)
           sudo systemctl --root=/mnt/imgroot is-enabled sf20-firstboot.service || true
 
       - name: Unmount & detach
@@ -161,6 +157,7 @@ jobs:
       - name: Upload artifact (.img.xz)
         uses: actions/upload-artifact@v4
         with:
-          name: sf20-${{ steps.base.outputs.shortname }} (${{ steps.base.outputs.label }})
+          # Use SHORTNAME only to avoid invalid characters
+          name: sf20-${{ steps.base.outputs.shortname }}
           path: build/sf20-*.img.xz
           if-no-files-found: error
