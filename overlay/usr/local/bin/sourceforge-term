@@ -1,2 +1,8 @@
 #!/bin/bash
-exec /usr/local/bin/sfsh -l
+# SourceForge 2.0 Terminal launcher
+if command -v sfsh >/dev/null 2>&1; then
+  exec /usr/local/bin/sfsh -l
+else
+  echo "sfsh not found; falling back to /bin/bash" >&2
+  exec /bin/bash -l
+fi

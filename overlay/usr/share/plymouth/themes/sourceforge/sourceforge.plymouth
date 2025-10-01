@@ -1,6 +1,6 @@
 [Plymouth Theme]
 Name=SourceForge 2.0
-Description=SourceForge boot splash
+Description=Minimal text theme for SF20
 ModuleName=script
 
 [script]

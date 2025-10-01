@@ -1,8 +1,15 @@
-logo = Image("logo.png");
-screen_w = Window.GetWidth();
-screen_h = Window.GetHeight();
-logo.Scale(screen_w, screen_h, SCALE_KEEP_ASPECT);
-x = (screen_w - logo.GetWidth())/2;
-y = (screen_h - logo.GetHeight())/2;
-logo.SetPosition(x, y);
-logo.Draw();
+// Minimal text plymouth theme
+message_sprite = Sprite();
+fun draw_message() {
+  my_message = "SourceForge 2.0 OS";
+  message_sprite.SetX(10);
+  message_sprite.SetY(10);
+  message_sprite.SetZ(10);
+  message_sprite.SetVisible(true);
+  message_sprite.SetText(my_message);
+}
+fun splash_start () {
+  Plymouth.SetBackgroundColor (0.0, 0.0, 0.0);
+  draw_message();
+}
+fun splash_end () { }
