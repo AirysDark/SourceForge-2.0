@@ -1,0 +1,25 @@
+# overlay/etc/systemd/system/sf20-terminal-tty1.service
+[Unit]
+Description=SourceForge 2.0 Terminal (tty1)
+After=systemd-user-sessions.service plymouth-quit-wait.service getty@tty1.service
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+# Bind to the console
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=tty
+StandardOutput=tty
+StandardError=journal
+Environment=TERM=linux
+# Your terminal launcher (already in overlay/usr/local/bin)
+ExecStart=/usr/local/bin/sourceforge-term
+WorkingDirectory=/root
+User=root
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
