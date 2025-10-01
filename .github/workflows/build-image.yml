@@ -9,10 +9,10 @@ on:
         required: true
         default: rpi234
         options:
-          - rpi234  # Raspberry Pi 2/3/4
-          - rpi5    # Raspberry Pi 5
+          - rpi234   # Raspberry Pi 2/3/4
+          - rpi5     # Raspberry Pi 5
       dietpi_url:
-        description: "(Optional) URL to DietPi base .img.xz (overrides local file)"
+        description: "(Optional) URL to DietPi base .img.xz if not in repo"
         required: false
         type: string
   push:
@@ -28,34 +28,41 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
-    env:
-      BOARD: ${{ inputs.board || 'rpi234' }}
-      BOARD_LABEL: ${{ inputs.board == 'rpi5' && 'Raspberry Pi 5' || 'Raspberry Pi 2/3/4' }}
-
     steps:
       - name: Checkout (with Git LFS)
         uses: actions/checkout@v4
         with:
           lfs: true
 
-      - name: Resolve base filenames
+      # Normalize BOARD with a default for non-dispatch triggers
+      - name: Set BOARD env (default to rpi234)
+        shell: bash
+        run: |
+          BOARD_IN="${{ github.event.inputs.board }}"
+          if [ -z "$BOARD_IN" ]; then BOARD_IN="rpi234"; fi
+          echo "BOARD=$BOARD_IN" >> "$GITHUB_ENV"
+
+      - name: Resolve base filenames and labels
         id: base
         shell: bash
         run: |
           set -euo pipefail
           case "${BOARD}" in
             rpi234)
-              BASENAME="DietPi_RPi234-ARMv8-Trixie"
-              OUTSHORT="rpi234"
+              echo "basename=DietPi_RPi234-ARMv8-Trixie" >> "$GITHUB_OUTPUT"
+              echo "shortname=rpi234" >> "$GITHUB_OUTPUT"
+              echo "board_label=Raspberry Pi 2/3/4" >> "$GITHUB_OUTPUT"
               ;;
             rpi5)
-              BASENAME="DietPi_RPi5-ARMv8-Trixie"
-              OUTSHORT="rpi5"
+              echo "basename=DietPi_RPi5-ARMv8-Trixie" >> "$GITHUB_OUTPUT"
+              echo "shortname=rpi5" >> "$GITHUB_OUTPUT"
+              echo "board_label=Raspberry Pi 5" >> "$GITHUB_OUTPUT"
               ;;
-            *) echo "Unknown BOARD: ${BOARD}" >&2; exit 1 ;;
+            *)
+              echo "Unknown BOARD: ${BOARD}" >&2
+              exit 1
+              ;;
           esac
-          echo "basename=${BASENAME}"   >> "$GITHUB_OUTPUT"
-          echo "shortname=${OUTSHORT}"  >> "$GITHUB_OUTPUT"
 
       - name: Ensure DietPi base is present (download if missing)
         shell: bash
@@ -65,14 +72,13 @@ jobs:
           DEST="dietpi-base/${BASENAME}.img.xz"
 
           if [[ -f "$DEST" ]]; then
-            echo "Found $DEST (using repo copy)"
+            echo "Found $DEST"
             exit 0
           fi
 
-          URL_INPUT="${{ inputs.dietpi_url || '' }}"
-          if [[ -z "$URL_INPUT" ]]; then
-            echo "ERROR: Missing ${DEST} and no 'dietpi_url' provided." >&2
-            echo "Provide a direct download URL in the workflow_dispatch input, or commit the file via Git LFS." >&2
+          URL_INPUT="${{ github.event.inputs.dietpi_url }}"
+          if [[ -z "${URL_INPUT}" ]]; then
+            echo "ERROR: Missing $DEST and no 'dietpi_url' provided." >&2
             exit 1
           fi
 
@@ -86,9 +92,9 @@ jobs:
           set -euo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
           ls -lh "dietpi-base/${BASENAME}.img.xz"
-          file "dietpi-base/${BASENAME}.img.xz"
+          file "dietpi-base/${BASENAME}.img.xz" || true
           if ! xz -t "dietpi-base/${BASENAME}.img.xz" 2>/dev/null; then
-            echo "ERROR: ${BASENAME}.img.xz is not a valid xz (likely an LFS pointer not fetched)." >&2
+            echo "ERROR: ${BASENAME}.img.xz is not a valid xz (possibly an unfetched LFS pointer)." >&2
             exit 1
           fi
 
@@ -115,7 +121,7 @@ jobs:
             fi
           done
           if [[ -d overlay/boot ]]; then
-            echo "ERROR: overlay/boot must NOT exist (boot edits go in os-pack/boot-side)" >&2
+            echo "ERROR: overlay/boot must NOT exist (use os-pack/boot-side)" >&2
             exit 1
           fi
           [[ $missing -eq 0 ]]
@@ -155,10 +161,9 @@ jobs:
           BASENAME="${{ steps.base.outputs.basename }}"
           IMG="build/${BASENAME}.img"
           LOOP=$(sudo losetup -f --show -P "$IMG")
-          echo "LOOP=$LOOP" | tee -a $GITHUB_ENV
+          echo "LOOP=$LOOP" >> "$GITHUB_ENV"
           sudo partprobe "$LOOP" || true
           sudo fdisk -l "$LOOP" || true
-          # Typical RPi layout: p1 = boot (vfat), p2 = root (ext4)
           sudo mount ${LOOP}p2 /mnt/imgroot
           sudo mount ${LOOP}p1 /mnt/imgboot
           ls -la /mnt/imgboot || true
@@ -172,14 +177,13 @@ jobs:
           sudo rsync -a overlay/ /mnt/imgroot/
           sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge-term || true
           sudo chmod +x /mnt/imgroot/usr/local/sf20/first-boot.sh || true
-          # If your sfsh binary is built earlier in CI, ensure it's installed to:
-          #   /mnt/imgroot/usr/local/bin/sfsh
-          # and make it executable.
+
+          # If your sfsh is built in-repo (e.g., shell/sfsh), install it:
           if [[ -f shell/sfsh ]]; then
             sudo install -m 0755 shell/sfsh /mnt/imgroot/usr/local/bin/sfsh
           fi
 
-          # Boot-side (FAT-safe rsync: do not preserve POSIX perms/owners)
+          # Boot-side (FAT-safe rsync)
           sudo mkdir -p /mnt/imgboot/sf20
           sudo rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
             os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
@@ -232,7 +236,7 @@ jobs:
           echo "== 7) Set Plymouth theme to SourceForge (if present) =="
           if [ -f "$ROOT/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth" ]; then
             sudo mkdir -p "$ROOT/etc/plymouth"
-            cat <<EOF | sudo tee "$ROOT/etc/plymouth/plymouthd.conf" >/dev/null
+            cat <<'EOF' | sudo tee "$ROOT/etc/plymouth/plymouthd.conf" >/dev/null
 [Daemon]
 Theme=sourceforge
 EOF
