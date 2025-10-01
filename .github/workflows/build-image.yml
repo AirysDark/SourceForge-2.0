@@ -125,7 +125,7 @@ jobs:
         run: |
           set -euxo pipefail
           sudo mkdir -p /mnt/imgboot/sf20
-          # FAT-safe rsync (no owner/group/perms)
+          # FAT-safe rsync (don?t preserve perms/owners/groups)
           sudo rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
             os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
 
@@ -134,8 +134,9 @@ jobs:
           set -euxo pipefail
           sudo systemctl --root=/mnt/imgroot enable sf20-firstboot.service
           sudo systemctl --root=/mnt/imgroot enable sf20-terminal-tty1.service
-          sudo chroot /mnt/imgroot /bin/bash -lc 'systemctl is-enabled sf20-firstboot.service || true'
-          sudo chroot /mnt/imgroot /bin/bash -lc 'systemctl is-enabled sf20-terminal-tty1.service || true'
+          # Verify enablement (no chroot needed)
+          sudo systemctl --root=/mnt/imgroot is-enabled sf20-firstboot.service || true
+          sudo systemctl --root=/mnt/imgroot is-enabled sf20-terminal-tty1.service || true
 
       - name: Unmount & detach
         if: always()
