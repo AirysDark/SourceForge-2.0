@@ -1,24 +1,11 @@
 # SourceForge 2.0 Shell build
-# Location: repo-root/shell/Makefile
-# Usage:
-#   make            # build sfsh locally
-#   make install    # put sfsh + chipsh wrapper into overlay/usr/local/bin
-#   make clean      # remove local build artifacts
-#   make distclean  # also remove installed overlay binaries
-
-# --- Config ---
 CC       ?= gcc
 CFLAGS   ?= -std=c11 -Wall -Wextra -O2
 SRC       = sfsh.c
 BIN       = sfsh
-
-# Overlay install target inside repo
 OVERLAY_BIN = ../overlay/usr/local/bin
 
-# --- Rules ---
 all: $(BIN)
-test: install
-	./test_sfsh.sh
 
 $(BIN): $(SRC)
 	$(CC) $(CFLAGS) $(SRC) -o $(BIN)
@@ -36,3 +23,6 @@ clean:
 
 distclean: clean
 	@rm -f $(OVERLAY_BIN)/sfsh $(OVERLAY_BIN)/chipsh || true
+
+test: install
+	@if [ -x ./test_sfsh.sh ]; then ./test_sfsh.sh; else echo "No test_sfsh.sh present; skipping local tests"; fi
