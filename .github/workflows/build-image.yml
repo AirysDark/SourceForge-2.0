@@ -25,12 +25,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Ensure LF endings & exec bit
+        run: |
+          sudo apt-get update && sudo apt-get install -y dos2unix
+          dos2unix scripts/build-pigen.sh || true
+          chmod +x scripts/build-pigen.sh
+
       - name: Install host deps
         run: sudo apt-get update && sudo apt-get install -y qemu-user-static kpartx xz-utils dosfstools git
 
       - name: Build image with pi-gen (Docker)
-        run: |
-          ./scripts/build-pigen.sh --model "${{ inputs.model || 'pi4' }}" --variant "${{ inputs.variant || 'lite' }}" --outdir dist
+        shell: bash
+        run: bash ./scripts/build-pigen.sh --model "${{ inputs.model || 'pi4' }}" --variant "${{ inputs.variant || 'lite' }}" --outdir dist
 
       - name: Checksums
         run: (cd dist && sha256sum * > checksums.txt)
@@ -40,3 +46,12 @@ jobs:
         with:
           name: sf20-os-image
           path: dist/*
+
+      - name: Publish GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

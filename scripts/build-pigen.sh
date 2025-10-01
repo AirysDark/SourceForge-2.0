@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Build a full flashable Raspberry Pi image using pi-gen (Docker).
 set -euo pipefail
 
 MODEL="pi4"       # pi3|pi4|pi5
@@ -12,7 +11,7 @@ while [[ $# -gt 0 ]]; do
     --variant) VARIANT="$2"; shift 2;;
     --outdir) OUTDIR="$2"; shift 2;;
     *) echo "Unknown arg $1"; exit 1;;
-  endsw
+  esac
 done
 
 mkdir -p "$OUTDIR"
