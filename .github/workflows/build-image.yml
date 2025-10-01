@@ -1,4 +1,4 @@
-name: Build SourceForge 2.0 (DietPi)
+name: Build SourceForge imaage 2.0 (DietPi)
 
 on:
   workflow_dispatch:
