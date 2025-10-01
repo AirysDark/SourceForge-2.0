@@ -1,10 +1,10 @@
-name: Build OS Image
+name: Build OS Image (64-bit)
 
 on:
   workflow_dispatch:
     inputs:
       model:
-        description: 'Target Raspberry Pi model'
+        description: 'Target Raspberry Pi model (arm64 only)'
         required: true
         default: 'pi4'
         type: choice
@@ -15,23 +15,27 @@ on:
         default: 'lite'
         type: choice
         options: [lite, full]
+      no_gpg:
+        description: 'Set true to bypass GPG (fix flaky mirrors)'
+        required: true
+        default: 'false'
+        type: choice
+        options: [false, true]
   push:
     tags:
       - 'v*.*.*'
 
 permissions:
-  contents: write   # needed to publish release assets
+  contents: write
 
 jobs:
   build-image:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Avoid CRLF issues and make script executable
-      - name: Ensure LF endings & exec bit
+      - name: Normalize line endings & exec bit
         run: |
           sudo apt-get update && sudo apt-get install -y dos2unix
           dos2unix scripts/build-pigen.sh || true
@@ -42,12 +46,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-user-static kpartx xz-utils dosfstools git
 
-      - name: Build image with pi-gen (Docker)
+      - name: Build 64-bit image with pi-gen (Docker)
         shell: bash
         run: |
           MODEL="${{ inputs.model || 'pi4' }}"
           VARIANT="${{ inputs.variant || 'lite' }}"
-          bash ./scripts/build-pigen.sh --model "$MODEL" --variant "$VARIANT" --outdir dist
+          NO_GPG="${{ inputs.no_gpg || 'false' }}"
+          bash ./scripts/build-pigen.sh --model "$MODEL" --variant "$VARIANT" --outdir dist --no-gpg "$NO_GPG"
 
       - name: Checksums
         run: (cd dist && sha256sum * > checksums.txt)
