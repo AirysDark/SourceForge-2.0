@@ -1,0 +1,134 @@
+name: Build SourceForge 2.0 (DietPi)
+
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: "Target board"
+        type: choice
+        required: true
+        default: rpi234
+        options:
+          - rpi234
+          - rpi5
+  push:
+    branches: [ main ]
+    paths:
+      - 'overlay/**'
+      - 'os-pack/**'
+      - 'dietpi-base/**'
+      - '.github/workflows/build-dietpi.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    env:
+      BOARD: ${{ inputs.board || 'rpi234' }}
+
+    steps:
+      - name: Checkout (with Git LFS)
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Resolve base image by BOARD
+        id: base
+        run: |
+          set -euo pipefail
+          case "${BOARD}" in
+            rpi234) BASENAME="DietPi_RPi234-ARMv8-Trixie" ;;
+            rpi5)   BASENAME="DietPi_RPi5-ARMv8-Trixie" ;;
+            *)      echo "Unknown BOARD: ${BOARD}" >&2; exit 1 ;;
+          esac
+          echo "basename=${BASENAME}" >> "$GITHUB_OUTPUT"
+          echo "shortname=${BOARD}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate DietPi base is real (not LFS pointer)
+        run: |
+          set -euo pipefail
+          BASENAME="${{ steps.base.outputs.basename }}"
+          ls -lh "dietpi-base/${BASENAME}.img.xz"
+          file "dietpi-base/${BASENAME}.img.xz"
+          if ! xz -t "dietpi-base/${BASENAME}.img.xz" 2>/dev/null; then
+            echo "ERROR: ${BASENAME}.img.xz is not a valid xz (likely an LFS pointer not fetched)." >&2
+            exit 1
+          fi
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux
+
+      - name: Prepare workspace
+        run: |
+          set -euxo pipefail
+          BASENAME="${{ steps.base.outputs.basename }}"
+          mkdir -p build
+          cp "dietpi-base/${BASENAME}.img.xz" build/
+          cd build
+          unxz -T0 "${BASENAME}.img.xz"
+          ls -lh
+
+      - name: Map & mount image partitions
+        run: |
+          set -euxo pipefail
+          BASENAME="${{ steps.base.outputs.basename }}"
+          IMG="build/${BASENAME}.img"
+          LOOP=$(sudo losetup -f --show -P "$IMG")
+          echo "LOOP=$LOOP" | tee $GITHUB_ENV
+          sudo partprobe "$LOOP" || true
+          sudo fdisk -l "$LOOP" || true
+          sudo mount ${LOOP}p2 /mnt/imgroot
+          sudo mount ${LOOP}p1 /mnt/imgboot
+
+      - name: Apply overlay (root filesystem)
+        run: |
+          set -euxo pipefail
+          sudo rsync -a overlay/ /mnt/imgroot/
+          sudo chmod +x /mnt/imgroot/usr/local/sf20/first-boot.sh || true
+          sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge-term || true
+          sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge.sh || true
+
+      - name: Apply boot-side (repo URL etc.)
+        run: |
+          set -euxo pipefail
+          sudo mkdir -p /mnt/imgboot/sf20
+          # FAT-safe rsync
+          sudo rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
+            os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
+
+      - name: Enable services inside target image
+        run: |
+          set -euxo pipefail
+          sudo systemctl --root=/mnt/imgroot enable sf20-firstboot.service
+          sudo systemctl --root=/mnt/imgroot enable sf20-terminal-tty1.service
+          sudo systemctl --root=/mnt/imgroot is-enabled sf20-firstboot.service || true
+          sudo systemctl --root=/mnt/imgroot is-enabled sf20-terminal-tty1.service || true
+
+      - name: Unmount & detach
+        if: always()
+        run: |
+          set -euxo pipefail
+          sync || true
+          sudo umount /mnt/imgboot || true
+          sudo umount /mnt/imgroot || true
+          if [ -n "${LOOP:-}" ]; then sudo losetup -d "$LOOP" || true; fi
+          sudo rm -rf /mnt/imgboot /mnt/imgroot || true
+
+      - name: Recompress image
+        run: |
+          set -euxo pipefail
+          BASENAME="${{ steps.base.outputs.basename }}"
+          SHORTNAME="${{ steps.base.outputs.shortname }}"
+          xz -9v "build/${BASENAME}.img"
+          mv "build/${BASENAME}.img.xz" "build/sf20-${SHORTNAME}.img.xz"
+          ls -lh build
+
+      - name: Upload artifact (.img.xz)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sf20-${{ steps.base.outputs.shortname }}
+          path: build/sf20-*.img.xz
+          if-no-files-found: error
