@@ -194,16 +194,13 @@ jobs:
         shell: bash
         run: |
           set -eux
-          # Load module (idempotent)
           sudo modprobe binfmt_misc || true
-          # Mount FS if not mounted
           if [ ! -e /proc/sys/fs/binfmt_misc/register ]; then
             sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
           fi
-          # Register handlers (idempotent)
           docker run --privileged --rm tonistiigi/binfmt --install arm64,arm
 
-      - name: Run pi-gen build in container
+      - name: Run pi-gen build in container (mount binfmt_misc inside)
         shell: bash
         env:
           DOCKER_DEFAULT_PLATFORM: linux/amd64
@@ -215,7 +212,9 @@ jobs:
             -e APT_MIRROR=http://deb.debian.org/debian \
             -e DEBOOTSTRAP_EXTRA_FLAGS="--no-check-gpg" \
             -v "$PWD/pi-gen/deploy":/pi-gen/deploy \
-            sf20-pigen
+            --entrypoint /bin/bash \
+            sf20-pigen \
+            -lc 'mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc || true; exec ./build.sh'
 
       - name: Find built image
         id: findimg
