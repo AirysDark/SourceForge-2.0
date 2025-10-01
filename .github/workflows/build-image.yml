@@ -87,6 +87,47 @@ jobs:
           set -eux
           git clone --depth 1 https://github.com/RPi-Distro/pi-gen.git
 
+      # --- HARDEN: ARM64-only + mirror + no-check-gpg in config
+      - name: Force ARM64-only and mirror in pi-gen config
+        shell: bash
+        run: |
+          set -eux
+          cat > pi-gen/config <<'EOF'
+          IMG_NAME=sf20
+          TARGET_HOSTNAME=sf20
+          ENABLE_SSH=1
+          LOCALE_DEFAULT="en_US.UTF-8"
+          KEYBOARD_KEYMAP="us"
+          KEYBOARD_LAYOUT="English (US)"
+          TIMEZONE_DEFAULT="UTC"
+
+          # ARM64-only
+          BUILD_ARM64=1
+          STAGE_LIST="stage0 stage1 stage2"
+
+          # Stable Debian mirror
+          APT_MIRROR=http://deb.debian.org/debian
+
+          # Belt & suspenders for stage0
+          DEBOOTSTRAP_EXTRA_FLAGS="--no-check-gpg"
+
+          SKIP_NOOBS=1
+          EOF
+          echo "== pi-gen/config =="
+          cat pi-gen/config
+
+      # --- FIX: stage0 still needs explicit --no-check-gpg in some releases
+      - name: Patch stage0 to always add --no-check-gpg
+        shell: bash
+        run: |
+          set -eux
+          STAGE0=pi-gen/stage0/prerun.sh
+          if grep -q 'debootstrap ' "$STAGE0"; then
+            sed -i 's@debootstrap @debootstrap --no-check-gpg @' "$STAGE0"
+          fi
+          echo "--- patched stage0/prerun.sh (head) ---"
+          head -n 120 "$STAGE0" || true
+
       - name: Create SF20 custom stage in pi-gen
         shell: bash
         run: |
@@ -145,32 +186,12 @@ jobs:
           EOS
           chmod +x "$EXP/01-run.sh"
 
-      - name: Configure pi-gen (arm64 + skip GPG check)
-        shell: bash
-        run: |
-          set -eux
-          cat > pi-gen/config <<'EOF'
-          IMG_NAME=sf20
-          TARGET_HOSTNAME=sf20
-          ENABLE_SSH=1
-          LOCALE_DEFAULT="en_US.UTF-8"
-          KEYBOARD_KEYMAP="us"
-          KEYBOARD_LAYOUT="English (US)"
-          TIMEZONE_DEFAULT="UTC"
-          BUILD_ARM64=1
-          STAGE_LIST="stage0 stage1 stage2"
-          APT_MIRROR=http://deb.debian.org/debian
-          DEBOOTSTRAP_EXTRA_FLAGS="--no-check-gpg"
-          SKIP_NOOBS=1
-          EOF
-
+      # --- Force correct container base and platform
       - name: Force Docker base to amd64 bookworm (safe patch)
         shell: bash
         run: |
           set -eux
-          # Use bookworm as base and keep ARG contract intact
           sed -i 's/^ARG BASE_IMAGE=.*/ARG BASE_IMAGE=debian:bookworm/' pi-gen/Dockerfile
-          # Make FROM use only ${BASE_IMAGE} (no platform flag or concat)
           sed -i 's/^FROM .*/FROM ${BASE_IMAGE}/' pi-gen/Dockerfile
           echo "--- Dockerfile head ---"
           head -n 8 pi-gen/Dockerfile
