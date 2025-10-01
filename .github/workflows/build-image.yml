@@ -70,8 +70,6 @@ jobs:
             sudo apt-get install -y build-essential
             make -C shell clean || true
             make -C shell
-          else
-            echo "No custom shell sources; sourceforge-term will fallback to /bin/bash -l"
           fi
 
       - name: Install host deps for pi-gen
@@ -95,7 +93,6 @@ jobs:
           mkdir -p "$STAGE/files/overlay" "$STAGE/00-run.chroot"
 
           rsync -a overlay/ "$STAGE/files/overlay/"
-
           if [ -f shell/sfsh ]; then
             install -m 0755 shell/sfsh "$STAGE/files/overlay/usr/local/bin/sfsh"
           fi
@@ -159,13 +156,25 @@ jobs:
           SKIP_NOOBS=1
           EOF
 
+      # >>> PATCH the Dockerfile to force correct platform/base image <<<
+      - name: Force Docker base to amd64 bookworm
+        shell: bash
+        run: |
+          set -eux
+          # Replace the first FROM line with an explicit platform+image
+          sed -i '0,/^FROM /s||FROM --platform=linux/amd64 debian:bookworm|' pi-gen/Dockerfile
+          echo "--- Dockerfile head ---"
+          head -n 5 pi-gen/Dockerfile
+          echo "-----------------------"
+
       - name: Build image (Docker)
         shell: bash
         run: |
           set -eux
           cd pi-gen
-          export BASE_IMAGE=debian:bookworm
-          export CONTAINER_ARCH=amd64
+          # Ensure these envs are seen by the container
+          export DEBOOTSTRAP_EXTRA_FLAGS="--no-check-gpg"
+          export APT_MIRROR="http://deb.debian.org/debian"
           ./build-docker.sh
 
       - name: Find built image
