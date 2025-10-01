@@ -1,0 +1,39 @@
+{
+  email ${EMAIL}
+  admin ${CADDY_ADMIN}
+}
+
+https://gitea.${DOMAIN} {
+  reverse_proxy gitea:3000
+  encode gzip
+  import authelia
+}
+
+https://code.${DOMAIN} {
+  reverse_proxy openvscode:3000
+  encode gzip
+  import authelia
+}
+
+https://minio.${DOMAIN} {
+  reverse_proxy minio:${MINIO_API_PORT}
+  encode gzip
+  import authelia
+}
+
+https://grafana.${DOMAIN} {
+  reverse_proxy grafana:3000
+  import authelia
+}
+
+# Authelia subroute macro
+@auth {
+  path *
+}
+
+(import) authelia {
+  forward_auth authelia:9091 {
+    uri /api/verify?rd=https://auth.${DOMAIN}
+    copy_headers Remote-User Remote-Groups Remote-Name Remote-Email
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "buildTypes": [
+    "debug",
+    "release"
+  ],
+  "countries": [
+    "AU",
+    "US",
+    "GB",
+    "DE",
+    "JP"
+  ],
+  "timezones": [
+    "Australia/Sydney",
+    "UTC",
+    "America/Los_Angeles"
+  ],
+  "keyboards": [
+    "us",
+    "uk",
+    "de",
+    "jp"
+  ],
+  "defaults": {
+    "timezone": "Australia/Sydney",
+    "keyboard": "us",
+    "buildType": "release"
+  }
+}

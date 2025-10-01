@@ -1,0 +1,15 @@
+services:
+  openvscode:
+    image: lscr.io/linuxserver/openvscode-server:latest
+    restart: unless-stopped
+    networks: [frontend, backend]
+    env_file: [./env/openvscode.env]
+    volumes:
+      - ${DATA_DIR}/workspaces:/workspaces
+    ports:
+      - "${OPENVSCODE_PORT}:3000"
+networks:
+  frontend:
+    external: true
+  backend:
+    external: true

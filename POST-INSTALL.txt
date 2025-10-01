@@ -1,0 +1,4 @@
+After copying this OS pack to the DietPi boot partition and booting:
+- The system will enable and run `sf20-provision.service` automatically.
+- To re-run manually later:
+  sudo systemctl start sf20-provision
