@@ -1,4 +1,4 @@
-name: Build DietPi Image (local base)
+name: Build DietPi Image (local base + LFS)
 
 on:
   workflow_dispatch:
@@ -20,14 +20,21 @@ jobs:
   build-dietpi:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout with LFS
+        uses: actions/checkout@v4
+        with:
+          lfs: true   # pull Git LFS files automatically
 
-      - name: Install deps
+      - name: Verify DietPi base images
+        run: |
+          ls -lh dietpi-base || true
+
+      - name: Install build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y xz-utils kpartx dosfstools parted unzip dos2unix
 
-      - name: Normalize script
+      - name: Normalize build script
         run: |
           dos2unix scripts/build-dietpi-image.sh || true
           chmod +x scripts/build-dietpi-image.sh
