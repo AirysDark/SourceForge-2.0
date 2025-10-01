@@ -1,1 +1,0 @@
-Place sourceforge20-infra.zip in this folder before first boot.
