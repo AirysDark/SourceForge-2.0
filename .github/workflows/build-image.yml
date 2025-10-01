@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       model:
-        description: 'Target model'
+        description: 'Target Raspberry Pi model'
         required: true
         default: 'pi4'
         type: choice
@@ -19,12 +19,18 @@ on:
     tags:
       - 'v*.*.*'
 
+permissions:
+  contents: write   # needed to publish release assets
+
 jobs:
   build-image:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Avoid CRLF issues and make script executable
       - name: Ensure LF endings & exec bit
         run: |
           sudo apt-get update && sudo apt-get install -y dos2unix
@@ -32,11 +38,16 @@ jobs:
           chmod +x scripts/build-pigen.sh
 
       - name: Install host deps
-        run: sudo apt-get update && sudo apt-get install -y qemu-user-static kpartx xz-utils dosfstools git
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static kpartx xz-utils dosfstools git
 
       - name: Build image with pi-gen (Docker)
         shell: bash
-        run: bash ./scripts/build-pigen.sh --model "${{ inputs.model || 'pi4' }}" --variant "${{ inputs.variant || 'lite' }}" --outdir dist
+        run: |
+          MODEL="${{ inputs.model || 'pi4' }}"
+          VARIANT="${{ inputs.variant || 'lite' }}"
+          bash ./scripts/build-pigen.sh --model "$MODEL" --variant "$VARIANT" --outdir dist
 
       - name: Checksums
         run: (cd dist && sha256sum * > checksums.txt)
@@ -51,7 +62,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/*
+          files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
