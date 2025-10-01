@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # /usr/local/sf20/first-boot.sh
-# First-boot for SourceForge 2.0: repo autoclone + terminal/shell install + boot logo + login menu
+# First-boot for SourceForge 2.0: repo autoclone + terminal/shell install + boot logo + login menu + ASCII MOTD
 
 set -euo pipefail
 LOG_DIR="/var/log"
@@ -18,26 +18,22 @@ apt-get update -y || true
 apt-get install -y git ca-certificates || true
 
 # -------- Repo discovery / autoclone --------
-# 1) If /boot/sf20.repourl exists, clone or pull into /opt/sourceforge20
 REPO_URL_FILE="/boot/sf20.repourl"
 TARGET_DIR="/opt/sourceforge20"
 
 if [[ -f "${REPO_URL_FILE}" ]]; then
   REPO_URL="$(tr -d '\r' < "${REPO_URL_FILE}" | sed -e 's/^[ \t]*//' -e 's/[ \t]*$//')"
   if [[ -n "${REPO_URL}" ]]; then
-    echo "[sf20-firstboot] Autoclone URL found: ${REPO_URL}"
+    echo "[sf20-firstboot] Autoclone URL: ${REPO_URL}"
     mkdir -p "$(dirname "${TARGET_DIR}")"
     if [[ -d "${TARGET_DIR}/.git" ]]; then
-      echo "[sf20-firstboot] Repo exists; pulling latest..."
       git -C "${TARGET_DIR}" pull --ff-only || true
     else
-      echo "[sf20-firstboot] Cloning to ${TARGET_DIR} ..."
       git clone --depth 1 "${REPO_URL}" "${TARGET_DIR}" || true
     fi
   fi
 fi
 
-# 2) Find a repo with terminal/ and shell/
 CANDIDATES=(
   "${TARGET_DIR}"
   "/boot/sourceforge20"
@@ -56,13 +52,10 @@ for d in "${CANDIDATES[@]}"; do
 done
 
 if [[ -z "${REPO}" ]]; then
-  echo "[sf20-firstboot] WARNING: repo not found. Place your repo at one of:"
-  printf '  - %s\n' "${CANDIDATES[@]}"
+  echo "[sf20-firstboot] WARNING: repo not found in candidates"
 else
   echo "[sf20-firstboot] Using repo: ${REPO}"
-  # Ensure installer exists; if not, create minimal one
   if [[ ! -f "${REPO}/scripts/install-term-shell.sh" ]]; then
-    echo "[sf20-firstboot] Creating minimal installer at ${REPO}/scripts/install-term-shell.sh"
     mkdir -p "${REPO}/scripts"
     cat > "${REPO}/scripts/install-term-shell.sh" <<'EOS'
 #!/usr/bin/env bash
@@ -126,12 +119,10 @@ EOS
     chmod +x "${REPO}/scripts/install-term-shell.sh"
   fi
 
-  echo "[sf20-firstboot] Running installer..."
-  bash "${REPO}/scripts/install-term-shell.sh" "${REPO}" || echo "[sf20-firstboot] installer reported errors"
+  bash "${REPO}/scripts/install-term-shell.sh" "${REPO}" || echo "[sf20-firstboot] installer errors"
 fi
 
-# -------- Boot splash (Plymouth) using repo logo/logo.png if available --------
-# Only if a logo exists
+# -------- Boot splash (Plymouth) --------
 PLY_THEME_DIR="/usr/share/plymouth/themes/sourceforge"
 LOGO_SRC=""
 if [[ -n "${REPO:-}" && -f "${REPO}/logo/logo.png" ]]; then
@@ -141,11 +132,9 @@ elif [[ -f "/boot/logo/logo.png" ]]; then
 fi
 
 if [[ -n "${LOGO_SRC}" ]]; then
-  echo "[sf20-firstboot] Installing boot splash using ${LOGO_SRC}"
   apt-get install -y plymouth plymouth-themes || true
   mkdir -p "${PLY_THEME_DIR}"
   cp "${LOGO_SRC}" "${PLY_THEME_DIR}/logo.png"
-
   cat > "${PLY_THEME_DIR}/sourceforge.plymouth" <<'EOF'
 [Plymouth Theme]
 Name=SourceForge 2.0
@@ -156,39 +145,44 @@ ModuleName=script
 ImageDir=/usr/share/plymouth/themes/sourceforge
 ScriptFile=/usr/share/plymouth/themes/sourceforge/sourceforge.script
 EOF
-
   cat > "${PLY_THEME_DIR}/sourceforge.script" <<'EOF'
-# Plymouth script to center logo.png preserving aspect
 logo = Image("logo.png");
-# scale to fit screen (keep aspect)
 screen_w = Window.GetWidth();
 screen_h = Window.GetHeight();
-
-# Compute scale
-scale_w = screen_w;
-scale_h = screen_h;
-logo.Scale(scale_w, scale_h, SCALE_KEEP_ASPECT);
-
+logo.Scale(screen_w, screen_h, SCALE_KEEP_ASPECT);
 x = (screen_w - logo.GetWidth())/2;
 y = (screen_h - logo.GetHeight())/2;
-
 logo.SetPosition(x, y);
 logo.Draw();
 EOF
-
-  # Set as default theme and rebuild initramfs if available
   if command -v plymouth-set-default-theme >/dev/null 2>&1; then
     plymouth-set-default-theme -R sourceforge || plymouth-set-default-theme sourceforge || true
   fi
-  # Many Pi builds skip initramfs; try update-initramfs but ignore errors
   update-initramfs -u || true
-else
-  echo "[sf20-firstboot] No logo found; skipping boot splash setup"
 fi
 
-# -------- Branding --------
-grep -q "SourceForge 2.0" /etc/motd 2>/dev/null || echo "SourceForge 2.0 — DietPi Appliance" >> /etc/motd
-grep -q "SourceForge 2.0" /etc/issue 2>/dev/null || echo "Welcome to SourceForge 2.0 (sf20)" >> /etc/issue
+# -------- ASCII MOTD from logo --------
+if [[ -n "${LOGO_SRC}" ]]; then
+  echo "[sf20-firstboot] Generating ASCII MOTD from logo"
+  apt-get install -y libcaca-utils || true
+  OUT="/etc/motd"
+  # Generate colored ANSI; terminals that can't do color will still display text
+  if img2txt --width=80 --ansi "${LOGO_SRC}" > "${OUT}.ansi" 2>/dev/null; then
+    {
+      echo
+      cat "${OUT}.ansi"
+      echo
+      echo "SourceForge 2.0 — DietPi Appliance"
+    } > "${OUT}"
+    rm -f "${OUT}.ansi"
+  else
+    echo "SourceForge 2.0 — DietPi Appliance" > "${OUT}"
+  fi
+  echo "Welcome to SourceForge 2.0 (sf20)" > /etc/issue
+else
+  grep -q "SourceForge 2.0" /etc/motd 2>/dev/null || echo "SourceForge 2.0 — DietPi Appliance" >> /etc/motd
+  grep -q "SourceForge 2.0" /etc/issue 2>/dev/null || echo "Welcome to SourceForge 2.0 (sf20)" >> /etc/issue
+fi
 
 # Mark done & disable service
 touch "${DONE_FLAG}"
