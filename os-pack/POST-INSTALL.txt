@@ -1,0 +1,2 @@
+After first boot, the system runs `sf20-provision.service` once.
+Re-run manually with:  sudo systemctl start sf20-provision

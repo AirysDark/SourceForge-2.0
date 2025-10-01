@@ -1,0 +1,54 @@
+name: Build DietPi Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      dietpi_url:
+        description: 'DietPi image URL (.img.xz) for Raspberry Pi arm64'
+        required: true
+        default: 'https://dietpi.com/downloads/images/DietPi_RPi-ARMv8-Bookworm.img.xz'
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-dietpi:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xz-utils kpartx qemu-utils dosfstools parted unzip curl dos2unix
+
+      - name: Normalize & exec
+        run: |
+          dos2unix scripts/build-dietpi-image.sh || true
+          chmod +x scripts/build-dietpi-image.sh
+
+      - name: Build image
+        env:
+          DIETPI_IMAGE_URL: ${{ inputs.dietpi_url }}
+        run: ./scripts/build-dietpi-image.sh dist
+
+      - name: Checksums
+        run: (cd dist && sha256sum * > checksums.txt)
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sf20-dietpi-image
+          path: dist/*
+
+      - name: Publish GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

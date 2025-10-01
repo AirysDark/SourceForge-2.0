@@ -1,20 +1,24 @@
-# SourceForge 2.0 — OS Image (GitHub Actions)
+# SourceForge 2.0 — DietPi OS Image Builder
 
-This repo builds a **flashable Raspberry Pi OS image** (`.img.xz`) using **pi-gen (Docker)** in GitHub Actions and **publishes it to GitHub Releases on tags**.
+Builds a **DietPi-based** custom image that boots into SourceForge 2.0 using a first-boot **OS Pack**.
+The workflow downloads the official DietPi Raspberry Pi 64-bit image, injects our OS Pack into the **boot** partition, and re-compresses it to `.img.xz`.
 
-## Build locally
+## What you get
+- DietPi 64-bit base (fast/lean)
+- First boot provisions Docker/Compose, firewall, log2ram, etc.
+- Auto-installs your infra bundle if you place `sourceforge20-infra.zip` in `/boot/sf20/`
+
+## Quick start (GitHub Actions)
+- Go to Actions → **Build DietPi Image** → Run workflow
+  - You can override the DietPi image URL if needed (defaults to Raspberry Pi arm64 Bookworm).
+
+## Local build (Linux host)
 ```bash
-sudo apt-get update && sudo apt-get install -y qemu-user-static kpartx xz-utils dosfstools git
-chmod +x scripts/build-pigen.sh
-./scripts/build-pigen.sh --model pi4 --variant lite --outdir dist
-ls dist/
+sudo apt-get update && sudo apt-get install -y xz-utils kpartx qemu-utils dosfstools parted unzip curl git
+chmod +x scripts/build-dietpi-image.sh
+DIETPI_IMAGE_URL='<official dietpi img.xz>' ./scripts/build-dietpi-image.sh dist
 ```
 
-## Build in GitHub
-- Manual: Actions → **Build OS Image** → Run workflow (choose model/variant).
-- Release: create a tag, e.g.
-  ```bash
-  git tag v0.1.0
-  git push --tags
-  ```
-  The workflow will build and **attach** the `.img.xz` and `checksums.txt` to that Release automatically.
+## Flashing
+- Download the artifact `.img.xz`, decompress, and flash to SD/SSD (Raspberry Pi Imager or `xz -d` + `dd`).
+- On first boot it will provision and bring the platform online.
