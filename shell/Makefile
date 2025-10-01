@@ -17,6 +17,8 @@ OVERLAY_BIN = ../overlay/usr/local/bin
 
 # --- Rules ---
 all: $(BIN)
+test: install
+	./test_sfsh.sh
 
 $(BIN): $(SRC)
 	$(CC) $(CFLAGS) $(SRC) -o $(BIN)

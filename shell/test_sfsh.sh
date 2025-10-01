@@ -1,31 +1,25 @@
 #!/usr/bin/env bash
-# Simple smoke test for SourceForge 2.0 Shell (sfsh)
-
 set -euo pipefail
 
 BIN="../overlay/usr/local/bin/sfsh"
-
-if [[ ! -x "$BIN" ]]; then
-  echo "ERROR: sfsh binary not found at $BIN"
-  exit 1
-fi
+[[ -x "$BIN" ]] || { echo "sfsh not found at $BIN"; exit 1; }
 
 echo "✅ sfsh binary exists"
 
-# Run version check
-out=$("$BIN" -c "version" 2>&1 || true)
-if [[ "$out" == *"SourceForge 2.0 Shell"* ]]; then
-  echo "✅ version command works"
+# Check 'version' builtin
+out="$(printf "version\n" | "$BIN" 2>/dev/null || true)"
+if grep -q "SourceForge 2.0 Shell" <<<"$out"; then
+  echo "✅ version builtin OK"
 else
-  echo "❌ version command failed"
+  echo "❌ version builtin failed"
   echo "$out"
   exit 1
 fi
 
-# Run a simple echo command
-out=$("$BIN" -c "echo hello" 2>&1 || true)
-if [[ "$out" == "hello" ]]; then
-  echo "✅ echo works"
+# Check simple command execution
+out="$(printf "echo hello\n" | "$BIN" 2>/dev/null || true)"
+if grep -q "^hello$" <<<"$out"; then
+  echo "✅ echo OK"
 else
   echo "❌ echo failed"
   echo "$out"
