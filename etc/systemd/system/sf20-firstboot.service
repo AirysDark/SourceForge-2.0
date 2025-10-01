@@ -1,5 +1,5 @@
 [Unit]
-Description=SourceForge 2.0 First Boot Integration
+Description=SourceForge 2.0 First Boot Integration (autoclone + boot logo)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,7 +7,6 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=/usr/local/sf20/first-boot.sh
 RemainAfterExit=yes
-# Run only if not done
 ConditionPathExists=!/var/lib/sf20/.firstboot_done
 
 [Install]
