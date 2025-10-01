@@ -1,5 +1,5 @@
 [Unit]
-Description=SourceForge 2.0 First Boot (autoclone + boot logo + ASCII MOTD)
+Description=SourceForge 2.0 First Boot (autoclone + boot logo + ASCII MOTD + terminal-as-main)
 After=network-online.target
 Wants=network-online.target
 

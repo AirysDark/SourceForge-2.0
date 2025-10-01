@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # /usr/local/sf20/first-boot.sh
-# First-boot for SourceForge 2.0: repo autoclone + terminal/shell install + boot logo + login menu + ASCII MOTD
+# First-boot: autoclone repo, install terminal+shell, set boot logo (plymouth),
+# generate ASCII MOTD, and ensure terminal is the main UX using chipsh.
 
 set -euo pipefail
 LOG_DIR="/var/log"
@@ -10,14 +11,13 @@ DONE_FLAG="${STATE_DIR}/.firstboot_done"
 
 mkdir -p "${LOG_DIR}" "${STATE_DIR}"
 exec > >(tee -a "${LOG_FILE}") 2>&1
-
 echo "[sf20-firstboot] $(date -Is) starting..."
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y || true
 apt-get install -y git ca-certificates || true
 
-# -------- Repo discovery / autoclone --------
+# -------- Repo autoclone --------
 REPO_URL_FILE="/boot/sf20.repourl"
 TARGET_DIR="/opt/sourceforge20"
 
@@ -43,7 +43,6 @@ CANDIDATES=(
   "/home/dietpi/sourceforge20"
   "/opt/sourceforge20"
 )
-
 REPO=""
 for d in "${CANDIDATES[@]}"; do
   if [[ -d "$d/terminal" && -d "$d/shell" ]]; then
@@ -55,71 +54,33 @@ if [[ -z "${REPO}" ]]; then
   echo "[sf20-firstboot] WARNING: repo not found in candidates"
 else
   echo "[sf20-firstboot] Using repo: ${REPO}"
-  if [[ ! -f "${REPO}/scripts/install-term-shell.sh" ]]; then
-    mkdir -p "${REPO}/scripts"
-    cat > "${REPO}/scripts/install-term-shell.sh" <<'EOS'
-#!/usr/bin/env bash
-set -euo pipefail
-REPO_ROOT="${1:-.}"
-TERM_DIR="${REPO_ROOT}/terminal"
-SHELL_DIR="${REPO_ROOT}/shell"
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y python3 python3-venv python3-pip gcc make
+  # Install Terminal + Shell
+  apt-get install -y python3 python3-venv python3-pip gcc make || true
 
-install -d /opt/sf20-terminal
-install -m 0644 "${TERM_DIR}/sourceforge_term.py" /opt/sf20-terminal/sourceforge_term.py
-python3 -m venv /opt/sf20-terminal/venv
-/opt/sf20-terminal/venv/bin/pip install --upgrade pip
+  # Terminal
+  install -d /opt/sf20-terminal
+  install -m 0644 "${REPO}/terminal/sourceforge_term.py" /opt/sf20-terminal/sourceforge_term.py
+  python3 -m venv /opt/sf20-terminal/venv
+  /opt/sf20-terminal/venv/bin/pip install --upgrade pip
 
-tee /usr/local/bin/sourceforge-term >/dev/null <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-exec /opt/sf20-terminal/venv/bin/python /opt/sf20-terminal/sourceforge_term.py "$@"
-EOF
-chmod +x /usr/local/bin/sourceforge-term
-
-install -d /opt/sf20-chipsh
-install -m 0644 "${SHELL_DIR}/chipsh.c" /opt/sf20-chipsh/chipsh.c
-if [[ -f "${SHELL_DIR}/Makefile" ]]; then
-  cp -a "${SHELL_DIR}/Makefile" /opt/sf20-chipsh/Makefile
-  make -C /opt/sf20-chipsh
-  install -m 0755 /opt/sf20-chipsh/chipsh /usr/local/bin/chipsh
-else
-  gcc -O2 -Wall -Wextra -o /usr/local/bin/chipsh /opt/sf20-chipsh/chipsh.c
-fi
-
-tee /etc/profile.d/99-sf20-login-menu.sh >/dev/null <<'EOF'
-case "$-" in *i*) : ;; *) return ;; esac
-[ -t 0 ] || return
-while true; do
-  clear
-  echo "==================== SourceForge 2.0 ===================="
-  echo " 1) SourceForge (Gitea/Runner/DDNS/HTTPS menu)"
-  echo " 2) SourceForge Terminal (UI program)"
-  echo " 3) Chip Shell (custom shell)"
-  echo " 4) DietPi Launcher"
-  echo " 5) Shell"
-  echo " q) Quit"
-  echo "========================================================="
-  read -rp "> " ans
-  case "$ans" in
-    1) /usr/local/sf20/sourceforge.sh ;;
-    2) sourceforge-term ;;
-    3) chipsh ;;
-    4) command -v dietpi-launcher >/dev/null && dietpi-launcher || echo "dietpi-launcher not found" ;;
-    5) break ;;
-    q|Q) exit 0 ;;
-    *) echo "Unknown choice"; sleep 1 ;;
-  esac
-done
-EOF
-chmod 0644 /etc/profile.d/99-sf20-login-menu.sh
-EOS
-    chmod +x "${REPO}/scripts/install-term-shell.sh"
+  # Shell
+  install -d /opt/sf20-chipsh
+  install -m 0644 "${REPO}/shell/chipsh.c" /opt/sf20-chipsh/chipsh.c
+  if [[ -f "${REPO}/shell/Makefile" ]]; then
+    cp -a "${REPO}/shell/Makefile" /opt/sf20-chipsh/Makefile
+    make -C /opt/sf20-chipsh
+    install -m 0755 /opt/sf20-chipsh/chipsh /usr/local/bin/chipsh
+  else
+    gcc -O2 -Wall -Wextra -o /usr/local/bin/chipsh /opt/sf20-chipsh/chipsh.c
   fi
 
-  bash "${REPO}/scripts/install-term-shell.sh" "${REPO}" || echo "[sf20-firstboot] installer errors"
+  # Ensure launcher and profile hook exist (from this pack)
+  if [[ ! -x "/usr/local/bin/sourceforge-term" ]]; then
+    echo "[sf20-firstboot] WARNING: /usr/local/bin/sourceforge-term missing; please copy pack files to /usr first"
+  fi
+  if [[ ! -f "/etc/profile.d/10-sf20-main.sh" ]]; then
+    echo "[sf20-firstboot] WARNING: /etc/profile.d/10-sf20-main.sh missing; please copy pack files to /etc first"
+  fi
 fi
 
 # -------- Boot splash (Plymouth) --------
@@ -166,7 +127,6 @@ if [[ -n "${LOGO_SRC}" ]]; then
   echo "[sf20-firstboot] Generating ASCII MOTD from logo"
   apt-get install -y libcaca-utils || true
   OUT="/etc/motd"
-  # Generate colored ANSI; terminals that can't do color will still display text
   if img2txt --width=80 --ansi "${LOGO_SRC}" > "${OUT}.ansi" 2>/dev/null; then
     {
       echo
@@ -184,8 +144,10 @@ else
   grep -q "SourceForge 2.0" /etc/issue 2>/dev/null || echo "Welcome to SourceForge 2.0 (sf20)" >> /etc/issue
 fi
 
+# Safety: remove any old login menu that might conflict
+rm -f /etc/profile.d/99-sf20-login-menu.sh 2>/dev/null || true
+
 # Mark done & disable service
 touch "${DONE_FLAG}"
 systemctl disable sf20-firstboot.service || true
-
 echo "[sf20-firstboot] $(date -Is) completed."
