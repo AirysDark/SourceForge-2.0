@@ -1,37 +1,73 @@
-name: Build SourceForge 2.0 (RPi3 / DietPi)
+name: Build SourceForge 2.0 (DietPi)
 
 on:
   workflow_dispatch:
+    inputs:
+      board:
+        description: "Target board"
+        type: choice
+        required: true
+        default: rpi234
+        options:
+          - rpi234     # RPi 2/3/4 ? DietPi_RPi234-ARMv8-Trixie.img.xz
+          - rpi5       # RPi 5      ? DietPi_RPi5-ARMv8-Trixie.img.xz
   push:
     branches: [ main ]
     paths:
       - 'overlay/**'
       - 'os-pack/**'
       - 'dietpi-base/**'
-      - '.github/workflows/build-rpi3.yml'
+      - '.github/workflows/build-dietpi.yml'
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
+
+    env:
+      BOARD: ${{ inputs.board || 'rpi234' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Sanity checks (tree + required files)
+      - name: Resolve base image by BOARD
+        id: base
+        run: |
+          set -euo pipefail
+          case "${BOARD}" in
+            rpi234)
+              BASENAME="DietPi_RPi234-ARMv8-Trixie"
+              ;;
+            rpi5)
+              BASENAME="DietPi_RPi5-ARMv8-Trixie"
+              ;;
+            *)
+              echo "Unknown BOARD: ${BOARD}" >&2
+              exit 1
+              ;;
+          esac
+          echo "basename=${BASENAME}" >> "$GITHUB_OUTPUT"
+          # Check file exists
+          if [ ! -f "dietpi-base/${BASENAME}.img.xz" ]; then
+            echo "Missing: dietpi-base/${BASENAME}.img.xz" >&2
+            echo "Place the DietPi base image into dietpi-base/ or add a wget step." >&2
+            exit 1
+          fi
+
+      - name: Sanity checks (overlay/os-pack layout)
         run: |
           set -e
-          test -f dietpi-base/DietPi_RPi3-ARMv8-Trixie.img.xz || { echo "dietpi-base/DietPi_RPi3-ARMv8-Trixie.img.xz not found"; exit 1; }
           test -f overlay/etc/profile.d/10-sf20-main.sh
           test -f overlay/etc/systemd/system/sf20-firstboot.service
           test -f overlay/etc/systemd/system/sf20-terminal-tty1.service
           test -f overlay/usr/local/sf20/first-boot.sh
+          test -f overlay/usr/local/bin/sourceforge-term
+          test -f overlay/usr/local/bin/sourceforge.sh
           test -f overlay/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth
           test -f overlay/usr/share/plymouth/themes/sourceforge/sourceforge.script
           test -f overlay/usr/share/plymouth/themes/sourceforge/logo.png
           test -f os-pack/boot-side/sf20/sf20.repourl
-          # Hard rule: overlay must NOT contain boot content
           if [ -d overlay/boot ]; then echo "overlay/boot must not exist"; exit 1; fi
 
       - name: Install build deps
@@ -42,22 +78,21 @@ jobs:
       - name: Prepare workspace
         run: |
           set -euxo pipefail
+          BASENAME="${{ steps.base.outputs.basename }}"
           mkdir -p build /mnt/imgroot /mnt/imgboot
-          cp dietpi-base/DietPi_RPi3-ARMv8-Trixie.img.xz build/
+          cp "dietpi-base/${BASENAME}.img.xz" build/
           cd build
-          unxz -T0 DietPi_RPi3-ARMv8-Trixie.img.xz
+          unxz -T0 "${BASENAME}.img.xz"
           ls -lh
 
       - name: Map & mount image partitions
         run: |
           set -euxo pipefail
-          IMG="build/DietPi_RPi3-ARMv8-Trixie.img"
-          # Create loop device with partition scan
+          BASENAME="${{ steps.base.outputs.basename }}"
+          IMG="build/${BASENAME}.img"
           LOOP=$(sudo losetup -f --show -P "$IMG")
           echo "LOOP=$LOOP" | tee $GITHUB_ENV
-          # Show partition table for debug
           sudo fdisk -l "$LOOP" || true
-          # Mount: p1=boot (FAT), p2=rootfs
           sudo mount ${LOOP}p2 /mnt/imgroot
           sudo mount ${LOOP}p1 /mnt/imgboot
           ls -la /mnt/imgboot || true
@@ -67,24 +102,21 @@ jobs:
         run: |
           set -euxo pipefail
           sudo rsync -a overlay/ /mnt/imgroot/
-          # Ensure executables
           sudo chmod +x /mnt/imgroot/usr/local/sf20/first-boot.sh || true
           sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge-term || true
           sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge.sh || true
 
-      - name: Apply boot-side (repo URL, etc.)
+      - name: Apply boot-side (repo URL etc.)
         run: |
           set -euxo pipefail
           sudo mkdir -p /mnt/imgboot/sf20
           sudo rsync -a os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
 
-      - name: Enable services in target image
+      - name: Enable services inside target image
         run: |
           set -euxo pipefail
-          # Use host systemctl to write enable symlinks into the image
           sudo systemctl --root=/mnt/imgroot enable sf20-firstboot.service
           sudo systemctl --root=/mnt/imgroot enable sf20-terminal-tty1.service
-          # Verify
           sudo chroot /mnt/imgroot /bin/bash -lc 'systemctl is-enabled sf20-firstboot.service || true'
           sudo chroot /mnt/imgroot /bin/bash -lc 'systemctl is-enabled sf20-terminal-tty1.service || true'
 
@@ -92,23 +124,21 @@ jobs:
         if: always()
         run: |
           set -euxo pipefail
-          # Flush writes
           sync || true
-          # Unmount
           sudo umount /mnt/imgboot || true
           sudo umount /mnt/imgroot || true
-          # Detach loop
           if [ -n "${LOOP:-}" ]; then sudo losetup -d "$LOOP"; fi
 
       - name: Recompress image
         run: |
           set -euxo pipefail
-          xz -9v build/DietPi_RPi3-ARMv8-Trixie.img
+          BASENAME="${{ steps.base.outputs.basename }}"
+          xz -9v "build/${BASENAME}.img"
           ls -lh build
 
       - name: Upload artifact (.img.xz)
         uses: actions/upload-artifact@v4
         with:
-          name: sf20-rpi3-img-${{ github.sha }}
-          path: build/DietPi_RPi3-ARMv8-Trixie.img.xz
+          name: sf20-${{ env.BOARD }}-img-${{ github.sha }}
+          path: build/*.img.xz
           if-no-files-found: error
