@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# /usr/local/bin/sourceforge-term
+# Launch SourceForge Terminal and use chipsh as the shell.
+set -euo pipefail
+
+APP_DIR="/opt/sf20-terminal"
+PY="${APP_DIR}/venv/bin/python"
+TERM_APP="${APP_DIR}/sourceforge_term.py"
+SHELL_BIN="/usr/local/bin/chipsh"
+
+[[ -x "$PY" ]] || { echo "Missing venv python at $PY"; exit 1; }
+[[ -f "$TERM_APP" ]] || { echo "Missing terminal app at $TERM_APP"; exit 1; }
+[[ -x "$SHELL_BIN" ]] || { echo "Missing chipsh at $SHELL_BIN"; exit 1; }
+
+export SHELL="$SHELL_BIN"
+export SF20_SHELL="$SHELL_BIN"
+
+# If your terminal app accepts --shell, pass it. If not, it can read $SHELL.
+exec "$PY" "$TERM_APP" --shell "$SHELL_BIN" "$@"
