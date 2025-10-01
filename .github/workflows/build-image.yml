@@ -17,6 +17,7 @@ on:
       - 'overlay/**'
       - 'os-pack/**'
       - 'dietpi-base/**'
+      - 'shell/**'
       - '.github/workflows/build-dietpi.yml'
 
 jobs:
@@ -62,6 +63,18 @@ jobs:
             exit 1
           fi
 
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux build-essential
+
+      - name: Build and test SourceForge 2.0 Shell
+        working-directory: shell
+        run: |
+          make clean
+          make install
+          make test
+
       - name: Sanity checks (overlay/os-pack layout)
         run: |
           set -e
@@ -71,16 +84,13 @@ jobs:
           test -f overlay/usr/local/sf20/first-boot.sh
           test -f overlay/usr/local/bin/sourceforge-term
           test -f overlay/usr/local/bin/sourceforge.sh
+          test -f overlay/usr/local/bin/sfsh
+          test -f overlay/usr/local/bin/chipsh
           test -f overlay/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth
           test -f overlay/usr/share/plymouth/themes/sourceforge/sourceforge.script
           test -f overlay/usr/share/plymouth/themes/sourceforge/logo.png
           test -f os-pack/boot-side/sf20/sf20.repourl
           if [ -d overlay/boot ]; then echo "overlay/boot must not exist"; exit 1; fi
-
-      - name: Install build deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux
 
       - name: Pre-clean mount points (best effort)
         if: always()
@@ -117,15 +127,11 @@ jobs:
         run: |
           set -euxo pipefail
           sudo rsync -a overlay/ /mnt/imgroot/
-          sudo chmod +x /mnt/imgroot/usr/local/sf20/first-boot.sh || true
-          sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge-term || true
-          sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge.sh || true
 
       - name: Apply boot-side (repo URL etc.)
         run: |
           set -euxo pipefail
           sudo mkdir -p /mnt/imgboot/sf20
-          # FAT-safe rsync (don't preserve perms/owners/groups)
           sudo rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
             os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
 
@@ -157,7 +163,6 @@ jobs:
       - name: Upload artifact (.img.xz)
         uses: actions/upload-artifact@v4
         with:
-          # Use SHORTNAME only to avoid invalid characters
           name: sf20-${{ steps.base.outputs.shortname }}
           path: build/sf20-*.img.xz
           if-no-files-found: error
