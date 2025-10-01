@@ -1,4 +1,4 @@
-name: Build SourceForge 2.0 (from source via pi-gen)
+name: Build SourceForge 2.0 (from source via pi-gen, forced amd64 container)
 
 on:
   workflow_dispatch:
@@ -12,8 +12,7 @@ on:
           - rpi234
           - rpi5
   push:
-    branches:
-      - main
+    branches: [ main ]
     paths:
       - "overlay/**"
       - "os-pack/**"
@@ -74,7 +73,7 @@ jobs:
             echo "No custom shell sources; sourceforge-term will fallback to /bin/bash -l"
           fi
 
-      - name: Install host deps for pi-gen
+      - name: Install host deps (docker + helpers)
         shell: bash
         run: |
           set -eux
@@ -87,8 +86,8 @@ jobs:
           set -eux
           git clone --depth 1 https://github.com/RPi-Distro/pi-gen.git
 
-      # --- HARDEN: ARM64-only + mirror + no-check-gpg in config
-      - name: Force ARM64-only and mirror in pi-gen config
+      # Force ARM64 build + sane mirror + no-check-gpg in config
+      - name: Write pi-gen config
         shell: bash
         run: |
           set -eux
@@ -101,14 +100,14 @@ jobs:
           KEYBOARD_LAYOUT="English (US)"
           TIMEZONE_DEFAULT="UTC"
 
-          # ARM64-only
+          # ARM64 rootfs target
           BUILD_ARM64=1
           STAGE_LIST="stage0 stage1 stage2"
 
-          # Stable Debian mirror
+          # Stable mirror
           APT_MIRROR=http://deb.debian.org/debian
 
-          # Belt & suspenders for stage0
+          # Ensure stage0 doesn't choke on signatures in CI
           DEBOOTSTRAP_EXTRA_FLAGS="--no-check-gpg"
 
           SKIP_NOOBS=1
@@ -116,7 +115,7 @@ jobs:
           echo "== pi-gen/config =="
           cat pi-gen/config
 
-      # --- FIX: stage0 still needs explicit --no-check-gpg in some releases
+      # Some pi-gen releases ignore DEBOOTSTRAP_EXTRA_FLAGS in stage0 ? hard patch it
       - name: Patch stage0 to always add --no-check-gpg
         shell: bash
         run: |
@@ -125,7 +124,6 @@ jobs:
           if grep -q 'debootstrap ' "$STAGE0"; then
             sed -i 's@debootstrap @debootstrap --no-check-gpg @' "$STAGE0"
           fi
-          echo "--- patched stage0/prerun.sh (head) ---"
           head -n 120 "$STAGE0" || true
 
       - name: Create SF20 custom stage in pi-gen
@@ -186,27 +184,57 @@ jobs:
           EOS
           chmod +x "$EXP/01-run.sh"
 
-      # --- Force correct container base and platform
-      - name: Force Docker base to amd64 bookworm (safe patch)
+      # >>> Use our OWN Dockerfile so NO CHANCE of i386 base <<<
+      - name: Write custom Dockerfile (bookworm, amd64)
         shell: bash
         run: |
           set -eux
-          sed -i 's/^ARG BASE_IMAGE=.*/ARG BASE_IMAGE=debian:bookworm/' pi-gen/Dockerfile
-          sed -i 's/^FROM .*/FROM ${BASE_IMAGE}/' pi-gen/Dockerfile
-          echo "--- Dockerfile head ---"
-          head -n 8 pi-gen/Dockerfile
-          echo "-----------------------"
+          cat > pi-gen/Dockerfile.sf20 <<'DOCKER'
+          FROM debian:bookworm
 
-      - name: Build image (Docker)
+          ENV DEBIAN_FRONTEND=noninteractive
+          RUN apt-get update && apt-get install -y --no-install-recommends \
+                git ca-certificates xz-utils rsync \
+                bc coreutils bzip2 zip unzip kmod udev cpio \
+                debootstrap qemu-user-static parted kpartx dosfstools \
+                curl wget gnupg dirmngr sudo jq \
+              && rm -rf /var/lib/apt/lists/*
+
+          WORKDIR /pi-gen
+          # Copy the prepared pi-gen tree (with our config + patches)
+          COPY . /pi-gen
+          # Make sure scripts are executable
+          RUN find /pi-gen -type f -name "*.sh" -exec chmod +x {} \; || true
+
+          # Default command runs pi-gen inside the container
+          CMD ["/bin/bash", "-lc", "./build.sh"]
+          DOCKER
+
+          echo "== Dockerfile.sf20 HEAD =="
+          head -n 40 pi-gen/Dockerfile.sf20
+
+      - name: Build pi-gen container (forced amd64)
         shell: bash
         env:
           DOCKER_DEFAULT_PLATFORM: linux/amd64
         run: |
           set -eux
-          cd pi-gen
-          export DEBOOTSTRAP_EXTRA_FLAGS="--no-check-gpg"
-          export APT_MIRROR="http://deb.debian.org/debian"
-          ./build-docker.sh
+          docker build --platform linux/amd64 -t sf20-pigen -f pi-gen/Dockerfile.sf20 pi-gen
+
+      - name: Run pi-gen build in container
+        shell: bash
+        env:
+          DOCKER_DEFAULT_PLATFORM: linux/amd64
+        run: |
+          set -eux
+          # Run privileged (loop devices), mount deploy for artifacts
+          docker run --privileged --rm \
+            -e IMG_NAME=sf20 \
+            -e BUILD_ARM64=1 \
+            -e APT_MIRROR=http://deb.debian.org/debian \
+            -e DEBOOTSTRAP_EXTRA_FLAGS="--no-check-gpg" \
+            -v "$PWD/pi-gen/deploy":/pi-gen/deploy \
+            sf20-pigen
 
       - name: Find built image
         id: findimg
