@@ -70,6 +70,8 @@ jobs:
             sudo apt-get install -y build-essential
             make -C shell clean || true
             make -C shell
+          else
+            echo "No custom shell sources; sourceforge-term will fallback to /bin/bash -l"
           fi
 
       - name: Install host deps for pi-gen
@@ -92,11 +94,15 @@ jobs:
           STAGE="pi-gen/stage2/99-sf20"
           mkdir -p "$STAGE/files/overlay" "$STAGE/00-run.chroot"
 
+          # Root overlay into the image (pi-gen will rsync this)
           rsync -a overlay/ "$STAGE/files/overlay/"
+
+          # Include custom shell if built
           if [ -f shell/sfsh ]; then
             install -m 0755 shell/sfsh "$STAGE/files/overlay/usr/local/bin/sfsh"
           fi
 
+          # Chroot script to own TTY1, set root shell, banners, plymouth
           cat > "$STAGE/00-run.chroot/01-sf20-setup" <<'EOS'
           #!/bin/bash -e
           set -eux
@@ -109,7 +115,7 @@ jobs:
 
           if [ -x /usr/local/bin/sfsh ]; then
             cp /etc/passwd /etc/passwd.sf20.bak
-            awk -F: 'BEGIN{OFS=":"} $1=="root"{ $7="/usr/local/bin/sfsh" } {print}' /etc/passwd.sf20.bak > /etc/passwd.tmp
+            awk -F: 'BEGIN{OFS=":"} $1=="root"{ $7="/usr/local/bin/sfsh" } {print }' /etc/passwd.sf20.bak > /etc/passwd.tmp
             mv /etc/passwd.tmp /etc/passwd
           fi
 
@@ -126,6 +132,7 @@ jobs:
           EOS
           chmod +x "$STAGE/00-run.chroot/01-sf20-setup"
 
+          # Export hook: copy boot-side content into BOOT FS during export
           EXP="pi-gen/export-image/99-sf20-boot"
           mkdir -p "$EXP/files/boot-side/sf20"
           rsync -a os-pack/boot-side/sf20/ "$EXP/files/boot-side/sf20/"
@@ -133,7 +140,8 @@ jobs:
           #!/bin/bash -e
           echo "[sf20] copying boot-side files into BOOTFS..."
           mkdir -p "$BOOTFS_DIR/sf20"
-          rsync -rltD --no-perms --no-owner --no-group --modify-window=2 "$PWD/99-sf20-boot/files/boot-side/sf20/" "$BOOTFS_DIR/sf20/" || true
+          rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
+            "$PWD/99-sf20-boot/files/boot-side/sf20/" "$BOOTFS_DIR/sf20/" || true
           EOS
           chmod +x "$EXP/01-run.sh"
 
@@ -156,23 +164,25 @@ jobs:
           SKIP_NOOBS=1
           EOF
 
-      # >>> PATCH the Dockerfile to force correct platform/base image <<<
-      - name: Force Docker base to amd64 bookworm
+      - name: Force Docker base to amd64 bookworm (safe patch)
         shell: bash
         run: |
           set -eux
-          # Replace the first FROM line with an explicit platform+image
-          sed -i '0,/^FROM /s||FROM --platform=linux/amd64 debian:bookworm|' pi-gen/Dockerfile
+          # Use bookworm as base and keep ARG contract intact
+          sed -i 's/^ARG BASE_IMAGE=.*/ARG BASE_IMAGE=debian:bookworm/' pi-gen/Dockerfile
+          # Make FROM use only ${BASE_IMAGE} (no platform flag or concat)
+          sed -i 's/^FROM .*/FROM ${BASE_IMAGE}/' pi-gen/Dockerfile
           echo "--- Dockerfile head ---"
-          head -n 5 pi-gen/Dockerfile
+          head -n 8 pi-gen/Dockerfile
           echo "-----------------------"
 
       - name: Build image (Docker)
         shell: bash
+        env:
+          DOCKER_DEFAULT_PLATFORM: linux/amd64
         run: |
           set -eux
           cd pi-gen
-          # Ensure these envs are seen by the container
           export DEBOOTSTRAP_EXTRA_FLAGS="--no-check-gpg"
           export APT_MIRROR="http://deb.debian.org/debian"
           ./build-docker.sh
