@@ -78,7 +78,7 @@ jobs:
         run: |
           set -eux
           sudo apt-get update
-          sudo apt-get install -y qemu-user-static debootstrap rsync xz-utils
+          sudo apt-get install -y qemu-user-static debootstrap rsync xz-utils unzip
 
       - name: Set up QEMU (arm64)
         uses: docker/setup-qemu-action@v3
@@ -216,17 +216,26 @@ jobs:
             sf20-pigen \
             -lc 'mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc || true; exec ./build.sh'
 
-      - name: Find built image
-        id: findimg
+      # NEW: handle .img or .zip output
+      - name: Collect image (handle .zip export)
+        id: collect
         shell: bash
         run: |
           set -eux
           ls -lh pi-gen/deploy || true
           IMG="$(ls -1t pi-gen/deploy/*.img 2>/dev/null | head -n 1 || true)"
           if [ -z "$IMG" ]; then
-            echo "No image found." >&2
-            find pi-gen -maxdepth 2 -name build.log -print -exec tail -n 200 {} \;
-            exit 1
+            ZIP="$(ls -1t pi-gen/deploy/image_*.zip 2>/dev/null | head -n 1 || true)"
+            if [ -z "$ZIP" ]; then
+              echo "No .img or .zip found in deploy/" >&2
+              find pi-gen -maxdepth 2 -name build.log -print -exec tail -n 200 {} \;
+              exit 1
+            fi
+            echo "Found zip: $ZIP ? extracting .img"
+            mkdir -p out
+            unzip -o "$ZIP" -d out
+            IMG="$(ls -1 out/*.img | head -n 1)"
+            [ -f "$IMG" ] || { echo "No .img inside zip" >&2; exit 1; }
           fi
           echo "img=$IMG" >> "$GITHUB_OUTPUT"
 
@@ -235,7 +244,7 @@ jobs:
         run: |
           set -eux
           SHORT="$BOARD"
-          cp "${{ steps.findimg.outputs.img }}" "sf20-${SHORT}.img"
+          cp "${{ steps.collect.outputs.img }}" "sf20-${SHORT}.img"
           xz -9v "sf20-${SHORT}.img"
           ls -lh "sf20-${SHORT}.img.xz"
 
