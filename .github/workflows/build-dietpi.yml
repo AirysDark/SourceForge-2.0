@@ -1,4 +1,4 @@
-name: Build SourceForge 2.0 (DietPi)
+name: Build SourceForge image 2.0 (DietPi)
 
 on:
   workflow_dispatch:
@@ -7,10 +7,10 @@ on:
         description: "Target board"
         type: choice
         required: true
-        default: rpi234
+        default: "Raspberry Pi 2/3/4"
         options:
-          - rpi234   # Raspberry Pi 2/3/4
-          - rpi5     # Raspberry Pi 5
+          - "Raspberry Pi 2/3/4"
+          - "Raspberry Pi 5"
   push:
     branches: [ main ]
     paths:
@@ -24,8 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75
 
+    # This is now just the label selected in the UI
     env:
-      BOARD: ${{ inputs.board || 'rpi234' }}
+      BOARD_LABEL: ${{ inputs.board || 'Raspberry Pi 2/3/4' }}
 
     steps:
       - name: Checkout (with Git LFS)
@@ -33,17 +34,22 @@ jobs:
         with:
           lfs: true
 
-      - name: Resolve base image by BOARD
+      - name: Resolve base image by BOARD label ? key
         id: base
         run: |
           set -euo pipefail
-          case "${BOARD}" in
-            rpi234) BASENAME="DietPi_RPi234-ARMv8-Trixie" ;;
-            rpi5)   BASENAME="DietPi_RPi5-ARMv8-Trixie" ;;
-            *)      echo "Unknown BOARD: ${BOARD}" >&2; exit 1 ;;
+          BOARD_LABEL="${BOARD_LABEL}"
+
+          case "${BOARD_LABEL}" in
+            "Raspberry Pi 2/3/4") BOARD_KEY="rpi234"; BASENAME="DietPi_RPi234-ARMv8-Trixie" ;;
+            "Raspberry Pi 5")     BOARD_KEY="rpi5";   BASENAME="DietPi_RPi5-ARMv8-Trixie" ;;
+            *) echo "Unknown selection: ${BOARD_LABEL}" >&2; exit 1 ;;
           esac
-          echo "basename=${BASENAME}" >> "$GITHUB_OUTPUT"
-          echo "shortname=${BOARD}" >> "$GITHUB_OUTPUT"
+
+          echo "label=${BOARD_LABEL}"   >> "$GITHUB_OUTPUT"
+          echo "shortname=${BOARD_KEY}" >> "$GITHUB_OUTPUT"
+          echo "basename=${BASENAME}"   >> "$GITHUB_OUTPUT"
+
           if [ ! -f "dietpi-base/${BASENAME}.img.xz" ]; then
             echo "Missing: dietpi-base/${BASENAME}.img.xz" >&2
             echo "Place the DietPi base image into dietpi-base/ (Git LFS) or add a download step." >&2
@@ -161,6 +167,7 @@ jobs:
       - name: Upload artifact (.img.xz)
         uses: actions/upload-artifact@v4
         with:
-          name: sf20-${{ steps.base.outputs.shortname }}
+          # Shows the friendly label in the UI
+          name: sf20-${{ steps.base.outputs.shortname }} (${{ steps.base.outputs.label }})
           path: build/sf20-*.img.xz
           if-no-files-found: error
