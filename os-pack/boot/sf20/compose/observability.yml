@@ -1,0 +1,53 @@
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    networks: [backend]
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    restart: unless-stopped
+    networks: [backend]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+
+  loki:
+    image: grafana/loki:2.9.8
+    restart: unless-stopped
+    networks: [backend]
+    volumes:
+      - ./config/loki/config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+
+  promtail:
+    image: grafana/promtail:2.9.8
+    restart: unless-stopped
+    networks: [backend]
+    volumes:
+      - ./config/promtail/config.yml:/etc/promtail/config.yml:ro
+      - /var/log:/var/log:ro
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    networks: [frontend, backend]
+    env_file: [./env/grafana.env]
+    volumes:
+      - grafana-data:/var/lib/grafana
+
+networks:
+  frontend:
+    external: true
+  backend:
+    external: true
+
+volumes:
+  grafana-data:
+  prometheus-data:
+  loki-data:
