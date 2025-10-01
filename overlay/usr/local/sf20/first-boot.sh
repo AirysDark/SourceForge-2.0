@@ -18,7 +18,8 @@ apt-get update -y || true
 apt-get install -y git ca-certificates || true
 
 # -------- Repo autoclone --------
-REPO_URL_FILE="/boot/sf20.repourl"
+REPO_URL_FILE="/boot/sf20/sf20.repourl"
+[ -f "/boot/sf20.repourl" ] && REPO_URL_FILE="/boot/sf20.repourl"  # legacy path support
 TARGET_DIR="/opt/sourceforge20"
 
 if [[ -f "${REPO_URL_FILE}" ]]; then
@@ -54,16 +55,13 @@ if [[ -z "${REPO}" ]]; then
   echo "[sf20-firstboot] WARNING: repo not found in candidates"
 else
   echo "[sf20-firstboot] Using repo: ${REPO}"
-  # Install Terminal + Shell
   apt-get install -y python3 python3-venv python3-pip gcc make || true
 
-  # Terminal
   install -d /opt/sf20-terminal
   install -m 0644 "${REPO}/terminal/sourceforge_term.py" /opt/sf20-terminal/sourceforge_term.py
   python3 -m venv /opt/sf20-terminal/venv
   /opt/sf20-terminal/venv/bin/pip install --upgrade pip
 
-  # Shell
   install -d /opt/sf20-chipsh
   install -m 0644 "${REPO}/shell/chipsh.c" /opt/sf20-chipsh/chipsh.c
   if [[ -f "${REPO}/shell/Makefile" ]]; then
@@ -72,14 +70,6 @@ else
     install -m 0755 /opt/sf20-chipsh/chipsh /usr/local/bin/chipsh
   else
     gcc -O2 -Wall -Wextra -o /usr/local/bin/chipsh /opt/sf20-chipsh/chipsh.c
-  fi
-
-  # Ensure launcher and profile hook exist (from this pack)
-  if [[ ! -x "/usr/local/bin/sourceforge-term" ]]; then
-    echo "[sf20-firstboot] WARNING: /usr/local/bin/sourceforge-term missing; please copy pack files to /usr first"
-  fi
-  if [[ ! -f "/etc/profile.d/10-sf20-main.sh" ]]; then
-    echo "[sf20-firstboot] WARNING: /etc/profile.d/10-sf20-main.sh missing; please copy pack files to /etc first"
   fi
 fi
 

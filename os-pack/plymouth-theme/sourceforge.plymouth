@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=SourceForge 2.0
+Description=SourceForge boot splash
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/sourceforge
+ScriptFile=/usr/share/plymouth/themes/sourceforge/sourceforge.script

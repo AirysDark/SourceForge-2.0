@@ -1,0 +1,8 @@
+logo = Image("logo.png");
+screen_w = Window.GetWidth();
+screen_h = Window.GetHeight();
+logo.Scale(screen_w, screen_h, SCALE_KEEP_ASPECT);
+x = (screen_w - logo.GetWidth())/2;
+y = (screen_h - logo.GetHeight())/2;
+logo.SetPosition(x, y);
+logo.Draw();
