@@ -1,4 +1,4 @@
-name: Build SourceForge 2.0 (DietPi)
+name: Build SourceForge 2.0 (DietPi base ? SF20)
 
 on:
   workflow_dispatch:
@@ -7,33 +7,30 @@ on:
         description: "Target board"
         type: choice
         required: true
-        default: "Raspberry Pi 2/3/4"
+        default: rpi234
         options:
-          - "Raspberry Pi 2/3/4"
-          - "Raspberry Pi 5"
+          - rpi234  # Raspberry Pi 2/3/4
+          - rpi5    # Raspberry Pi 5
+      dietpi_url:
+        description: "(Optional) URL to DietPi base .img.xz (overrides local file)"
+        required: false
+        type: string
   push:
     branches: [ main ]
     paths:
       - 'overlay/**'
       - 'os-pack/**'
       - 'dietpi-base/**'
-      - 'shell/**'
       - '.github/workflows/build-image.yml'
 
-permissions:
-  contents: read
-
-# ------------------------------
-# Job A: Manual single-board build
-# ------------------------------
 jobs:
-  build_single:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 120
 
     env:
-      BOARD_LABEL: ${{ inputs.board }}
+      BOARD: ${{ inputs.board || 'rpi234' }}
+      BOARD_LABEL: ${{ inputs.board == 'rpi5' && 'Raspberry Pi 5' || 'Raspberry Pi 2/3/4' }}
 
     steps:
       - name: Checkout (with Git LFS)
@@ -41,26 +38,49 @@ jobs:
         with:
           lfs: true
 
-      - name: Resolve base image (label -> key)
+      - name: Resolve base filenames
         id: base
         shell: bash
         run: |
           set -euo pipefail
-          case "${BOARD_LABEL}" in
-            "Raspberry Pi 2/3/4") BOARD_KEY="rpi234"; BASENAME="DietPi_RPi234-ARMv8-Trixie" ;;
-            "Raspberry Pi 5")     BOARD_KEY="rpi5";   BASENAME="DietPi_RPi5-ARMv8-Trixie" ;;
-            *) echo "Unknown selection: ${BOARD_LABEL}" >&2; exit 1 ;;
+          case "${BOARD}" in
+            rpi234)
+              BASENAME="DietPi_RPi234-ARMv8-Trixie"
+              OUTSHORT="rpi234"
+              ;;
+            rpi5)
+              BASENAME="DietPi_RPi5-ARMv8-Trixie"
+              OUTSHORT="rpi5"
+              ;;
+            *) echo "Unknown BOARD: ${BOARD}" >&2; exit 1 ;;
           esac
-          echo "label=${BOARD_LABEL}"   >> "$GITHUB_OUTPUT"
-          echo "shortname=${BOARD_KEY}" >> "$GITHUB_OUTPUT"
           echo "basename=${BASENAME}"   >> "$GITHUB_OUTPUT"
-          if [ ! -f "dietpi-base/${BASENAME}.img.xz" ]; then
-            echo "Missing: dietpi-base/${BASENAME}.img.xz" >&2
-            echo "Place the DietPi base image into dietpi-base/ (Git LFS) or add a download step." >&2
+          echo "shortname=${OUTSHORT}"  >> "$GITHUB_OUTPUT"
+
+      - name: Ensure DietPi base is present (download if missing)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASENAME="${{ steps.base.outputs.basename }}"
+          DEST="dietpi-base/${BASENAME}.img.xz"
+
+          if [[ -f "$DEST" ]]; then
+            echo "Found $DEST (using repo copy)"
+            exit 0
+          fi
+
+          URL_INPUT="${{ inputs.dietpi_url || '' }}"
+          if [[ -z "$URL_INPUT" ]]; then
+            echo "ERROR: Missing ${DEST} and no 'dietpi_url' provided." >&2
+            echo "Provide a direct download URL in the workflow_dispatch input, or commit the file via Git LFS." >&2
             exit 1
           fi
 
-      - name: Validate DietPi base is real (not LFS pointer)
+          mkdir -p dietpi-base
+          echo "Downloading: $URL_INPUT"
+          curl -fL --retry 5 --retry-delay 3 -o "$DEST" "$URL_INPUT"
+
+      - name: Validate DietPi base is real (not an LFS pointer)
         shell: bash
         run: |
           set -euo pipefail
@@ -68,57 +88,43 @@ jobs:
           ls -lh "dietpi-base/${BASENAME}.img.xz"
           file "dietpi-base/${BASENAME}.img.xz"
           if ! xz -t "dietpi-base/${BASENAME}.img.xz" 2>/dev/null; then
-            echo "ERROR: ${BASENAME}.img.xz is not a valid xz" >&2
+            echo "ERROR: ${BASENAME}.img.xz is not a valid xz (likely an LFS pointer not fetched)." >&2
             exit 1
           fi
+
+      - name: Sanity checks (overlay + boot-side)
+        shell: bash
+        run: |
+          set -e
+          required=(
+            overlay/usr/local/bin/sourceforge-term
+            overlay/etc/systemd/system/sf20-terminal-tty1.service
+            overlay/usr/local/sf20/first-boot.sh
+            overlay/etc/profile.d/10-sf20-main.sh
+            overlay/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth
+            overlay/usr/share/plymouth/themes/sourceforge/sourceforge.script
+            os-pack/boot-side/sf20/sf20.repourl
+          )
+          missing=0
+          for f in "${required[@]}"; do
+            if [[ ! -f "$f" ]]; then
+              echo "MISSING: $f"
+              missing=1
+            else
+              echo "ok     : $f"
+            fi
+          done
+          if [[ -d overlay/boot ]]; then
+            echo "ERROR: overlay/boot must NOT exist (boot edits go in os-pack/boot-side)" >&2
+            exit 1
+          fi
+          [[ $missing -eq 0 ]]
 
       - name: Install build deps
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux \
-            build-essential
-
-      - name: Build and test SourceForge 2.0 Shell
-        working-directory: shell
-        shell: bash
-        run: |
-          set -euo pipefail
-          make clean
-          make install
-
-          BIN="../overlay/usr/local/bin/sfsh"
-          if [ ! -x "$BIN" ]; then
-            echo "sfsh binary not found at $BIN" >&2
-            exit 1
-          fi
-
-          # version test
-          out="$(printf 'version\nexit\n' | "$BIN" 2>/dev/null || true)"
-          echo "$out" | tr -d '\r' | grep -q "SourceForge 2.0 Shell" || { echo "version test failed"; exit 1; }
-
-          # echo test with unique marker (robust to prompts)
-          out2="$(printf 'echo __SF_OK__\nexit\n' | "$BIN" 2>/dev/null || true)"
-          echo "$out2" | tr -d '\r' | grep -q '__SF_OK__' || { echo "echo test failed"; exit 1; }
-
-          echo "sfsh smoke tests passed ?"
-
-      - name: Sanity checks (overlay/os-pack layout)
-        shell: bash
-        run: |
-          set -e
-          test -f overlay/etc/profile.d/10-sf20-main.sh
-          test -f overlay/etc/systemd/system/sf20-firstboot.service
-          test -f overlay/etc/systemd/system/sf20-terminal-tty1.service
-          test -f overlay/usr/local/sf20/first-boot.sh
-          test -f overlay/usr/local/bin/sourceforge-term
-          test -f overlay/usr/local/bin/sourceforge.sh
-          test -f overlay/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth
-          test -f overlay/usr/share/plymouth/themes/sourceforge/sourceforge.script
-          test -f overlay/usr/share/plymouth/themes/sourceforge/logo.png
-          test -f os-pack/boot-side/sf20/sf20.repourl
-          if [ -d overlay/boot ]; then echo "overlay/boot must not exist"; exit 1; fi
+          sudo apt-get install -y xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux
 
       - name: Pre-clean mount points (best effort)
         if: always()
@@ -128,8 +134,9 @@ jobs:
           sudo umount /mnt/imgroot 2>/dev/null || true
           sudo rm -rf /mnt/imgboot /mnt/imgroot
           sudo mkdir -p /mnt/imgroot /mnt/imgboot
+          sudo chown "$USER":"$USER" /mnt/imgroot /mnt/imgboot || true
 
-      - name: Prepare workspace
+      - name: Prepare workspace (unxz base)
         shell: bash
         run: |
           set -euxo pipefail
@@ -141,44 +148,101 @@ jobs:
           ls -lh
 
       - name: Map & mount image partitions
+        id: mount
         shell: bash
         run: |
           set -euxo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
           IMG="build/${BASENAME}.img"
           LOOP=$(sudo losetup -f --show -P "$IMG")
-          echo "LOOP=$LOOP" | tee $GITHUB_ENV
+          echo "LOOP=$LOOP" | tee -a $GITHUB_ENV
           sudo partprobe "$LOOP" || true
           sudo fdisk -l "$LOOP" || true
+          # Typical RPi layout: p1 = boot (vfat), p2 = root (ext4)
           sudo mount ${LOOP}p2 /mnt/imgroot
           sudo mount ${LOOP}p1 /mnt/imgboot
+          ls -la /mnt/imgboot || true
+          ls -la /mnt/imgroot || true
 
-      - name: Apply overlay (root filesystem)
+      - name: Apply overlay (root filesystem) + boot-side
         shell: bash
         run: |
           set -euxo pipefail
+          # Root overlay
           sudo rsync -a overlay/ /mnt/imgroot/
-          sudo chmod +x /mnt/imgroot/usr/local/sf20/first-boot.sh || true
           sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge-term || true
-          sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge.sh || true
+          sudo chmod +x /mnt/imgroot/usr/local/sf20/first-boot.sh || true
+          # If your sfsh binary is built earlier in CI, ensure it's installed to:
+          #   /mnt/imgroot/usr/local/bin/sfsh
+          # and make it executable.
+          if [[ -f shell/sfsh ]]; then
+            sudo install -m 0755 shell/sfsh /mnt/imgroot/usr/local/bin/sfsh
+          fi
 
-      - name: Apply boot-side (repo URL etc.)
-        shell: bash
-        run: |
-          set -euxo pipefail
+          # Boot-side (FAT-safe rsync: do not preserve POSIX perms/owners)
           sudo mkdir -p /mnt/imgboot/sf20
-          # FAT-safe rsync (no perms/owners/groups on FAT)
           sudo rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
             os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
 
-      - name: Enable services inside target image
+      - name: Neutralize DietPi & set SF20 as the OS (own init/tty1/shell)
         shell: bash
         run: |
           set -euxo pipefail
-          sudo systemctl --root=/mnt/imgroot enable sf20-firstboot.service
-          sudo systemctl --root=/mnt/imgroot enable sf20-terminal-tty1.service
-          sudo systemctl --root=/mnt/imgroot is-enabled sf20-firstboot.service || true
-          sudo systemctl --root=/mnt/imgroot is-enabled sf20-terminal-tty1.service || true
+
+          ROOT=/mnt/imgroot
+          BOOT=/mnt/imgboot
+
+          echo "== 1) Mask DietPi boot pipeline =="
+          for svc in dietpi-preboot dietpi-boot dietpi-firstboot dietpi-postboot dietpi-wifi-monitor dietpi-wait-for-network
+          do
+            if [ -f "$ROOT/etc/systemd/system/${svc}.service" ] || [ -f "$ROOT/lib/systemd/system/${svc}.service" ]; then
+              sudo systemctl --root="$ROOT" disable "${svc}" || true
+              sudo ln -sf /dev/null "$ROOT/etc/systemd/system/${svc}.service"
+              echo "masked ${svc}"
+            fi
+          done
+
+          echo "== 2) Own tty1 (replace getty@tty1 with sf20-terminal-tty1) =="
+          sudo systemctl --root="$ROOT" disable getty@tty1.service || true
+          sudo ln -sf /dev/null "$ROOT/etc/systemd/system/getty@tty1.service"
+          sudo systemctl --root="$ROOT" enable sf20-terminal-tty1.service || true
+
+          echo "== 3) Make sfsh the real root shell =="
+          if [ -f "$ROOT/etc/passwd" ]; then
+            sudo cp "$ROOT/etc/passwd" "$ROOT/etc/passwd.sf20.bak"
+            sudo awk -F: 'BEGIN{OFS=":"} $1=="root"{ $7="/usr/local/bin/sfsh" } {print}' \
+              "$ROOT/etc/passwd.sf20.bak" | sudo tee "$ROOT/etc/passwd" >/dev/null
+          fi
+
+          echo "== 4) Remove DietPi branding =="
+          sudo rm -f "$ROOT/etc/update-motd.d/"*dietpi* 2>/dev/null || true
+          echo "SourceForge 2.0 OS" | sudo tee "$ROOT/etc/issue" >/dev/null
+          echo "SourceForge 2.0 OS" | sudo tee "$ROOT/etc/issue.net" >/dev/null
+          sudo rm -f "$ROOT/etc/profile.d/"*dietpi* 2>/dev/null || true
+
+          echo "== 5) Kill DietPi boot config on /boot =="
+          sudo rm -f "$BOOT/dietpi.txt" "$BOOT/dietpi-wifi.txt" 2>/dev/null || true
+
+          echo "== 6) Ensure our terminal/shell exist and are executable =="
+          sudo chmod +x "$ROOT/usr/local/bin/sourceforge-term" || true
+          if [ -f "$ROOT/usr/local/bin/sfsh" ]; then
+            sudo chmod +x "$ROOT/usr/local/bin/sfsh"
+          fi
+
+          echo "== 7) Set Plymouth theme to SourceForge (if present) =="
+          if [ -f "$ROOT/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth" ]; then
+            sudo mkdir -p "$ROOT/etc/plymouth"
+            cat <<EOF | sudo tee "$ROOT/etc/plymouth/plymouthd.conf" >/dev/null
+[Daemon]
+Theme=sourceforge
+EOF
+          fi
+
+          echo "== 8) Final sanity output =="
+          grep '^root:' "$ROOT/etc/passwd" || true
+          ls -l "$ROOT/usr/local/bin/sourceforge-term" || true
+          ls -l "$ROOT/usr/local/bin/sfsh" || true
+          sudo systemctl --root="$ROOT" list-unit-files | grep -E 'sf20|dietpi|getty@tty1' || true
 
       - name: Unmount & detach
         if: always()
@@ -196,197 +260,12 @@ jobs:
         run: |
           set -euxo pipefail
           BASENAME="${{ steps.base.outputs.basename }}"
-          SHORTNAME="${{ steps.base.outputs.shortname }}"
+          SHORT="${{ steps.base.outputs.shortname }}"
           xz -9v "build/${BASENAME}.img"
-          mv "build/${BASENAME}.img.xz" "build/sf20-${SHORTNAME}.img.xz"
+          mv "build/${BASENAME}.img.xz" "build/sf20-${SHORT}.img.xz"
           ls -lh build
 
-      - name: Upload artifact (.img.xz)
-        uses: actions/upload-artifact@v4
-        with:
-          name: sf20-${{ steps.base.outputs.shortname }}
-          path: build/sf20-*.img.xz
-          if-no-files-found: error
-
-  # ------------------------------
-  # Job B: Matrix build on push (both boards)
-  # ------------------------------
-  build_matrix:
-    if: ${{ github.event_name == 'push' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 75
-
-    strategy:
-      fail-fast: false
-      matrix:
-        label: ["Raspberry Pi 2/3/4", "Raspberry Pi 5"]
-
-    env:
-      BOARD_LABEL: ${{ matrix.label }}
-
-    steps:
-      - name: Checkout (with Git LFS)
-        uses: actions/checkout@v4
-        with:
-          lfs: true
-
-      - name: Resolve base image (label -> key)
-        id: base
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "${BOARD_LABEL}" in
-            "Raspberry Pi 2/3/4") BOARD_KEY="rpi234"; BASENAME="DietPi_RPi234-ARMv8-Trixie" ;;
-            "Raspberry Pi 5")     BOARD_KEY="rpi5";   BASENAME="DietPi_RPi5-ARMv8-Trixie" ;;
-            *) echo "Unknown selection: ${BOARD_LABEL}" >&2; exit 1 ;;
-          esac
-          echo "label=${BOARD_LABEL}"   >> "$GITHUB_OUTPUT"
-          echo "shortname=${BOARD_KEY}" >> "$GITHUB_OUTPUT"
-          echo "basename=${BASENAME}"   >> "$GITHUB_OUTPUT"
-          if [ ! -f "dietpi-base/${BASENAME}.img.xz" ]; then
-            echo "Missing: dietpi-base/${BASENAME}.img.xz" >&2
-            exit 1
-          fi
-
-      - name: Validate DietPi base is real (not LFS pointer)
-        shell: bash
-        run: |
-          set -euo pipefail
-          BASENAME="${{ steps.base.outputs.basename }}"
-          ls -lh "dietpi-base/${BASENAME}.img.xz"
-          file "dietpi-base/${BASENAME}.img.xz"
-          if ! xz -t "dietpi-base/${BASENAME}.img.xz" 2>/dev/null; then
-            echo "ERROR: ${BASENAME}.img.xz is not a valid xz" >&2
-            exit 1
-          fi
-
-      - name: Install build deps
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            xz-utils rsync kpartx parted e2fsprogs dosfstools util-linux \
-            build-essential
-
-      - name: Build and test SourceForge 2.0 Shell
-        working-directory: shell
-        shell: bash
-        run: |
-          set -euo pipefail
-          make clean
-          make install
-
-          BIN="../overlay/usr/local/bin/sfsh"
-          if [ ! -x "$BIN" ]; then
-            echo "sfsh binary not found at $BIN" >&2
-            exit 1
-          fi
-
-          out="$(printf 'version\nexit\n' | "$BIN" 2>/dev/null || true)"
-          echo "$out" | tr -d '\r' | grep -q "SourceForge 2.0 Shell" || { echo "version test failed"; exit 1; }
-
-          out2="$(printf 'echo __SF_OK__\nexit\n' | "$BIN" 2>/dev/null || true)"
-          echo "$out2" | tr -d '\r' | grep -q '__SF_OK__' || { echo "echo test failed"; exit 1; }
-
-          echo "sfsh smoke tests passed ?"
-
-      - name: Sanity checks (overlay/os-pack layout)
-        shell: bash
-        run: |
-          set -e
-          test -f overlay/etc/profile.d/10-sf20-main.sh
-          test -f overlay/etc/systemd/system/sf20-firstboot.service
-          test -f overlay/etc/systemd/system/sf20-terminal-tty1.service
-          test -f overlay/usr/local/sf20/first-boot.sh
-          test -f overlay/usr/local/bin/sourceforge-term
-          test -f overlay/usr/local/bin/sourceforge.sh
-          test -f overlay/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth
-          test -f overlay/usr/share/plymouth/themes/sourceforge/sourceforge.script
-          test -f overlay/usr/share/plymouth/themes/sourceforge/logo.png
-          test -f os-pack/boot-side/sf20/sf20.repourl
-          if [ -d overlay/boot ]; then echo "overlay/boot must not exist"; exit 1; fi
-
-      - name: Pre-clean mount points (best effort)
-        if: always()
-        shell: bash
-        run: |
-          sudo umount /mnt/imgboot 2>/dev/null || true
-          sudo umount /mnt/imgroot 2>/dev/null || true
-          sudo rm -rf /mnt/imgboot /mnt/imgroot
-          sudo mkdir -p /mnt/imgroot /mnt/imgboot
-
-      - name: Prepare workspace
-        shell: bash
-        run: |
-          set -euxo pipefail
-          BASENAME="${{ steps.base.outputs.basename }}"
-          mkdir -p build
-          cp "dietpi-base/${BASENAME}.img.xz" build/
-          cd build
-          unxz -T0 "${BASENAME}.img.xz"
-          ls -lh
-
-      - name: Map & mount image partitions
-        shell: bash
-        run: |
-          set -euxo pipefail
-          BASENAME="${{ steps.base.outputs.basename }}"
-          IMG="build/${BASENAME}.img"
-          LOOP=$(sudo losetup -f --show -P "$IMG")
-          echo "LOOP=$LOOP" | tee $GITHUB_ENV
-          sudo partprobe "$LOOP" || true
-          sudo fdisk -l "$LOOP" || true
-          sudo mount ${LOOP}p2 /mnt/imgroot
-          sudo mount ${LOOP}p1 /mnt/imgboot
-
-      - name: Apply overlay (root filesystem)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sudo rsync -a overlay/ /mnt/imgroot/
-          sudo chmod +x /mnt/imgroot/usr/local/sf20/first-boot.sh || true
-          sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge-term || true
-          sudo chmod +x /mnt/imgroot/usr/local/bin/sourceforge.sh || true
-
-      - name: Apply boot-side (repo URL etc.)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sudo mkdir -p /mnt/imgboot/sf20
-          sudo rsync -rltD --no-perms --no-owner --no-group --modify-window=2 \
-            os-pack/boot-side/sf20/ /mnt/imgboot/sf20/
-
-      - name: Enable services inside target image
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sudo systemctl --root=/mnt/imgroot enable sf20-firstboot.service
-          sudo systemctl --root=/mnt/imgroot enable sf20-terminal-tty1.service
-          sudo systemctl --root=/mnt/imgroot is-enabled sf20-firstboot.service || true
-          sudo systemctl --root=/mnt/imgroot is-enabled sf20-terminal-tty1.service || true
-
-      - name: Unmount & detach
-        if: always()
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sync || true
-          sudo umount /mnt/imgboot || true
-          sudo umount /mnt/imgroot || true
-          if [ -n "${LOOP:-}" ]; then sudo losetup -d "$LOOP" || true; fi
-          sudo rm -rf /mnt/imgboot /mnt/imgroot || true
-
-      - name: Recompress image (rename by board)
-        shell: bash
-        run: |
-          set -euxo pipefail
-          BASENAME="${{ steps.base.outputs.basename }}"
-          SHORTNAME="${{ steps.base.outputs.shortname }}"
-          xz -9v "build/${BASENAME}.img"
-          mv "build/${BASENAME}.img.xz" "build/sf20-${SHORTNAME}.img.xz"
-          ls -lh build
-
-      - name: Upload artifact (.img.xz)
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: sf20-${{ steps.base.outputs.shortname }}

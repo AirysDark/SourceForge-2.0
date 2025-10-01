@@ -1,0 +1,62 @@
+- name: Neutralize DietPi & set SF20 as the OS
+  shell: bash
+  run: |
+    set -euxo pipefail
+
+    ROOT=/mnt/imgroot
+    BOOT=/mnt/imgboot
+
+    echo "== 1) Mask DietPi boot pipeline =="
+    for svc in dietpi-preboot dietpi-boot dietpi-firstboot dietpi-postboot dietpi-wifi-monitor dietpi-wait-for-network
+    do
+      if [ -f "$ROOT/etc/systemd/system/${svc}.service" ] || [ -f "$ROOT/lib/systemd/system/${svc}.service" ]; then
+        sudo systemctl --root="$ROOT" disable "${svc}" || true
+        sudo ln -sf /dev/null "$ROOT/etc/systemd/system/${svc}.service"
+        echo "masked ${svc}"
+      fi
+    done
+
+    echo "== 2) Stop login spam: fully replace tty1 with our terminal =="
+    # Belt & suspenders: mask getty@tty1; our sf20-terminal-tty1.service is enabled elsewhere
+    sudo systemctl --root="$ROOT" disable getty@tty1.service || true
+    sudo ln -sf /dev/null "$ROOT/etc/systemd/system/getty@tty1.service"
+
+    echo "== 3) Make sfsh the real root shell (no chroot needed) =="
+    if [ -f "$ROOT/etc/passwd" ]; then
+      sudo cp "$ROOT/etc/passwd" "$ROOT/etc/passwd.sf20.bak"
+      # Replace only the shell field for root
+      sudo awk -F: 'BEGIN{OFS=":"} $1=="root"{ $7="/usr/local/bin/sfsh" } {print}' \
+        "$ROOT/etc/passwd.sf20.bak" | sudo tee "$ROOT/etc/passwd" >/dev/null
+    fi
+
+    echo "== 4) Remove DietPi userland branding =="
+    # MOTD / issue
+    sudo rm -f "$ROOT/etc/update-motd.d/"*dietpi* 2>/dev/null || true
+    echo "SourceForge 2.0 OS" | sudo tee "$ROOT/etc/issue" >/dev/null
+    echo "SourceForge 2.0 OS" | sudo tee "$ROOT/etc/issue.net" >/dev/null
+
+    # Bash login banners
+    sudo rm -f "$ROOT/etc/profile.d/"*dietpi* 2>/dev/null || true
+
+    echo "== 5) Kill DietPi boot config so nothing reads it =="
+    sudo rm -f "$BOOT/dietpi.txt" "$BOOT/dietpi-wifi.txt" 2>/dev/null || true
+
+    echo "== 6) Ensure our terminal + service are present/executable =="
+    sudo chmod +x "$ROOT/usr/local/bin/sourceforge-term" || true
+    sudo chmod +x "$ROOT/usr/local/bin/sfsh" || true
+    sudo systemctl --root="$ROOT" enable sf20-terminal-tty1.service || true
+
+    echo "== 7) Plymouth theme: set SourceForge as default =="
+    if [ -f "$ROOT/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth" ]; then
+      echo '/usr/share/plymouth/themes/sourceforge/sourceforge.plymouth' | \
+        sudo tee "$ROOT/etc/plymouth/plymouthd.conf" >/dev/null
+      # Some images use alternatives
+      sudo update-alternatives --quiet --force --install \
+        "$ROOT/etc/alternatives/default.plymouth" default.plymouth \
+        /usr/share/plymouth/themes/sourceforge/sourceforge.plymouth 100 || true
+    fi
+
+    echo "== 8) Final sanity output =="
+    grep '^root:' "$ROOT/etc/passwd" || true
+    ls -l "$ROOT/usr/local/bin/sfsh" "$ROOT/usr/local/bin/sourceforge-term"
+    systemctl --root="$ROOT" list-unit-files | grep -E 'sf20|dietpi|getty@tty1' || true
