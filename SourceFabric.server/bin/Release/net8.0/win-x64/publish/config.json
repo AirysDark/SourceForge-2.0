@@ -1,0 +1,17 @@
+{
+  "Server": {
+    "IP": "192.168.1.202",
+    "Port": 8080
+  },
+  "Security": {
+    "EnableLogin": false,
+    "AdminUser": "admin",
+    "AdminPassword": "admim"
+  },
+  "NoIP": {
+    "Enabled": false,
+    "Hostname": "sourceforge.ddns.net",
+    "Username": "AirysDark",
+    "Password": "Zombie1986X2s"
+  }
+}

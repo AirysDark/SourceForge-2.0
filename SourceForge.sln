@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SourceForge.Server", "SourceForge.server\SourceForge.Server.csproj", "{6735886A-C9F6-68B3-AF0C-B3529EFF0BC2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SourceFabric.Server", "SourceFabric.server\SourceFabric.Server.csproj", "{3D4F7DFC-8EA1-3706-67C4-30B580FD455D}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{6735886A-C9F6-68B3-AF0C-B3529EFF0BC2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6735886A-C9F6-68B3-AF0C-B3529EFF0BC2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6735886A-C9F6-68B3-AF0C-B3529EFF0BC2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6735886A-C9F6-68B3-AF0C-B3529EFF0BC2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3D4F7DFC-8EA1-3706-67C4-30B580FD455D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3D4F7DFC-8EA1-3706-67C4-30B580FD455D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3D4F7DFC-8EA1-3706-67C4-30B580FD455D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3D4F7DFC-8EA1-3706-67C4-30B580FD455D}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {27AFBDF8-1D7E-4E9E-B0FB-0D16E01C9F60}
+	EndGlobalSection
+EndGlobal

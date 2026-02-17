@@ -1,0 +1,7 @@
+C:\Users\AirysDark\Documents\SourceFabric\SourceFabric.Server\bin\Release\net8.0\win-x64\publish\appsettings.Development.json
+C:\Users\AirysDark\Documents\SourceFabric\SourceFabric.Server\bin\Release\net8.0\win-x64\publish\appsettings.json
+C:\Users\AirysDark\Documents\SourceFabric\SourceFabric.Server\bin\Release\net8.0\win-x64\publish\config.json
+C:\Users\AirysDark\Documents\SourceFabric\SourceFabric.Server\bin\Release\net8.0\win-x64\publish\SourceFabric.Server.pdb
+C:\Users\AirysDark\Documents\SourceFabric\SourceFabric.Server\bin\Release\net8.0\win-x64\publish\aspnetcorev2_inprocess.dll
+C:\Users\AirysDark\Documents\SourceFabric\SourceFabric.Server\bin\Release\net8.0\win-x64\publish\e_sqlite3.dll
+C:\Users\AirysDark\Documents\SourceFabric\SourceFabric.Server\bin\Release\net8.0\win-x64\publish\SourceFabric.Server.exe

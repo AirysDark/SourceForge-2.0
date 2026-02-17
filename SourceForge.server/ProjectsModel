@@ -1,0 +1,28 @@
+using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.Data.Sqlite;
+using SourceForge.Server.Models;
+
+public class ProjectsModel : PageModel
+{
+    public List<Project> Projects { get; set; } = new();
+
+    public void OnGet()
+    {
+        using var conn = new SqliteConnection("Data Source=Data/SourceForge.db");
+        conn.Open();
+
+        var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT Id, Name, Description, CreatedAt FROM Projects";
+
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            Projects.Add(new Project
+            {
+                Id = reader.GetInt32(0),
+                Name = reader.GetString(1),
+                Description = reader.GetString(2)
+            });
+        }
+    }
+}

@@ -1,0 +1,6 @@
+Severity	Code	Description	Project	File	Line	Suppression State
+Error (active)	CS0103	The name 'WebApplication' does not exist in the current context	Coldspace.Server	C:\Users\AirysDark\Documents\Coldspace\Coldspace.Server\Program.cs	3	
+Error (active)	CS0103	The name 'Console' does not exist in the current context	Coldspace.Server	C:\Users\AirysDark\Documents\Coldspace\Coldspace.Server\Program.cs	21	
+Error (active)	CS0103	The name 'Console' does not exist in the current context	Coldspace.Server	C:\Users\AirysDark\Documents\Coldspace\Coldspace.Server\Program.cs	22	
+Error (active)	CS0103	The name 'Console' does not exist in the current context	Coldspace.Server	C:\Users\AirysDark\Documents\Coldspace\Coldspace.Server\Program.cs	23	
+Message (active)	CA1050	Types are declared in namespaces to prevent name collisions and as a way to organize related types in an object hierarchy.	Coldspace.Server	C:\Users\AirysDark\Documents\Coldspace\Coldspace.Server\Pages\Index.cshtml.cs	3	
