@@ -1,9 +1,0 @@
-C:\Users\AirysDark\Documents\SourceForge\SourceForge.server\obj\Release\net8.0\win-x64\SourceForge.Server.csproj.AssemblyReference.cache
-C:\Users\AirysDark\Documents\SourceForge\SourceForge.server\obj\Release\net8.0\win-x64\rpswa.dswa.cache.json
-C:\Users\AirysDark\Documents\SourceForge\SourceForge.server\obj\Release\net8.0\win-x64\SourceForge.Server.GeneratedMSBuildEditorConfig.editorconfig
-C:\Users\AirysDark\Documents\SourceForge\SourceForge.server\obj\Release\net8.0\win-x64\SourceForge.Server.AssemblyInfoInputs.cache
-C:\Users\AirysDark\Documents\SourceForge\SourceForge.server\obj\Release\net8.0\win-x64\SourceForge.Server.AssemblyInfo.cs
-C:\Users\AirysDark\Documents\SourceForge\SourceForge.server\obj\Release\net8.0\win-x64\SourceForge.Server.csproj.CoreCompileInputs.cache
-C:\Users\AirysDark\Documents\SourceForge\SourceForge.server\obj\Release\net8.0\win-x64\SourceForge.Server.MvcApplicationPartsAssemblyInfo.cache
-C:\Users\AirysDark\Documents\SourceForge\SourceForge.server\obj\Release\net8.0\win-x64\SourceForge.Server.RazorAssemblyInfo.cache
-C:\Users\AirysDark\Documents\SourceForge\SourceForge.server\obj\Release\net8.0\win-x64\SourceForge.Server.RazorAssemblyInfo.cs
