@@ -1,7 +1,0 @@
-#!/bin/sh
-cat <<'EOF'
-=====================================================
-  Welcome to SourceForge 2.0 - Custom Linux OS
-  Minimal. Fast. AI-ready.
-=====================================================
-EOF
